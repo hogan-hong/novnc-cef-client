@@ -318,10 +318,10 @@ function createVNCWindows (config, groupIndex) {
     // ★ 页面加载后设置第二层标题 + 注入黑色背景
     win.webContents.on('did-finish-load', () => {
       win.webContents.insertCSS(`
-        html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; }
-        body { display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: flex-start !important; height: 500px !important; overflow: hidden !important; }
-        canvas, #noVNC_canvas, .noVNC_canvas, #canvas { margin-top: 0 !important; }
+        html, body { background: #000 !important; overflow: hidden !important; }
       `)
+      // ★ 页面内容贴顶：滚到最顶部
+      win.webContents.executeJavaScript('window.scrollTo(0, 0)').catch(() => {})
       setTimeout(() => {
         setLayer2Title(win, item)
       }, 500)
