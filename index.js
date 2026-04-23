@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { exec } = require('child_process')
+const { execFile } = require('child_process')
 
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -66,33 +66,81 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题（PowerShell调Win32 API） ==========
+// ========== 设置第二层窗口标题（写ps1文件执行，避免引号转义问题） ==========
 function setLayer2Title (win, item, retryCount = 0) {
   try {
     const hwndBuf = win.getNativeWindowHandle()
     // 读取hwnd的16进制值
     let hwndHex
     if (hwndBuf.length === 8) {
-      hwndHex = hwndBuf.readBigUInt64LE().toString(16)
+      // 8字节，可能是32位系统上对齐到8字节，实际有效值在低4字节
+      const lo = hwndBuf.readUInt32LE(0)
+      const hi = hwndBuf.readUInt32LE(4)
+      if (hi === 0) {
+        hwndHex = lo.toString(16).toUpperCase()
+      } else {
+        hwndHex = hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
+      }
     } else {
-      hwndHex = hwndBuf.readUInt32LE().toString(16)
+      hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
     }
-    hwndHex = hwndHex.toUpperCase()
 
     const childTitle = `${item.index}|${item.controlIP}`
 
-    // 用PowerShell内联脚本调用Win32 API设置Chrome Legacy Window标题
-    const psCmd = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{[DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string n,string t);[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool SetWindowText(IntPtr h,string t);}' -PassThru | Out-Null; $p=[IntPtr]0x${hwndHex}; $c=[W]::FindWindowEx($p,[IntPtr]::Zero,'Chrome Legacy Window',$null); if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${childTitle}');write-host 'OK'}else{write-host 'RETRY'}`
+    // 写临时ps1文件执行，避免命令行引号转义问题
+    const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+  [DllImport("user32.dll")]
+  public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr child, string className, string windowTitle);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern bool SetWindowText(IntPtr hWnd, string title);
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+}
+"@
 
-    exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCmd}"`, { timeout: 5000 }, (err, stdout) => {
+$parent = [IntPtr]0x${hwndHex}
+$child = [Win32]::FindWindowEx($parent, [IntPtr]::Zero, "Chrome Legacy Window", $null)
+
+if ($child -eq [IntPtr]::Zero) {
+  # 子窗口可能还没创建，也尝试遍历子窗口查找
+  $child = [Win32]::GetWindow($parent, 5)  # GW_CHILD = 5
+}
+
+if ($child -ne [IntPtr]::Zero) {
+  [Win32]::SetWindowText($child, "${childTitle}")
+  Write-Host "OK"
+} else {
+  Write-Host "RETRY"
+}
+`
+
+    const tmpFile = path.join(app.getPath('temp'), `novnc_title_${item.index}.ps1`)
+    fs.writeFileSync(tmpFile, psScript, 'utf-8')
+
+    execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 8000 }, (err, stdout, stderr) => {
+      // 清理临时文件
+      try { fs.unlinkSync(tmpFile) } catch (e) {}
+
       const output = (stdout || '').trim()
-      if (output === 'RETRY' && retryCount < 10) {
-        setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+      if (output === 'RETRY' && retryCount < 15) {
+        setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
+      } else if (output === 'OK') {
+        console.log(`Window ${item.index}: layer2 title set to "${childTitle}"`)
+      } else {
+        console.log(`Window ${item.index}: ps1 output="${output}", stderr="${(stderr||'').trim()}"`)
+        if (retryCount < 15) {
+          setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
+        }
       }
     })
   } catch (e) {
-    if (retryCount < 10) {
-      setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+    console.error(`setLayer2Title error (window ${item.index}):`, e.message)
+    if (retryCount < 15) {
+      setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
     }
   }
 }
@@ -163,7 +211,7 @@ function createExitButton () {
     height: 30,
     frame: false,
     transparent: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     skipTaskbar: true,
     resizable: false,
     webPreferences: {
@@ -202,14 +250,11 @@ function createExitButton () {
 </html>`
 
   exitWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-
-  // 防止退出窗口被关闭导致程序退出
-  exitWindow.on('close', (e) => {
-    e.preventDefault()
-  })
 }
 
 // ========== 创建VNC窗口 ==========
+const vncWindows = []
+
 function createVNCWindows (config, groupIndex) {
   if (selectWindow) {
     selectWindow.close()
@@ -233,8 +278,6 @@ function createVNCWindows (config, groupIndex) {
   const totalHeight = rows * winH
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
   const offsetY = Math.floor((workArea.height - totalHeight) / 2)
-
-  const windows = []
 
   groupItems.forEach((item, i) => {
     const col = i % cols
@@ -284,7 +327,7 @@ function createVNCWindows (config, groupIndex) {
     // 加载URL
     win.loadURL(item.url)
 
-    windows.push(win)
+    vncWindows.push(win)
   })
 
   // ★ 创建右下角退出按钮
@@ -324,12 +367,26 @@ ipcMain.on('select-group', (event, groupIndex) => {
   createVNCWindows(config, groupIndex)
 })
 
-// 退出程序
+// ★ 退出程序：先关闭所有窗口，再退出
 ipcMain.on('exit-app', () => {
+  // 关闭所有VNC窗口
+  vncWindows.forEach(w => {
+    try { w.destroy() } catch (e) {}
+  })
+  vncWindows.length = 0
+
+  // 关闭退出按钮窗口
+  if (exitWindow) {
+    try { exitWindow.destroy() } catch (e) {}
+    exitWindow = null
+  }
+
+  // 强制退出
   app.quit()
+  process.exit(0)
 })
 
-// 只在所有VNC窗口关闭时退出（排除退出按钮窗口）
+// 不自动退出，由退出按钮控制
 app.on('window-all-closed', function () {
-  // 不自动退出，由退出按钮控制
+  // 不退出，退出按钮窗口还在
 })
