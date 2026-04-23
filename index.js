@@ -1,17 +1,34 @@
 const { app, BrowserWindow } = require('electron')
 
+// ========== 关键：禁用 DirectComposition，让渲染走 GDI 可见管线 ==========
+// 这样大漠插件 GDI BitBlt 截图才不会黑屏，行为与易语言+CEF3父句柄方式一致
+app.commandLine.appendSwitch('disable-direct-composition')
+// 禁用 GPU 进程沙箱（部分环境下 GPU 进程受限也会导致截图黑屏）
+app.commandLine.appendSwitch('no-sandbox')
+
+// ========== GPU 加速保留 ==========
+app.commandLine.appendSwitch('enable-gpu')
+app.commandLine.appendSwitch('enable-gpu-rasterization')
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
+
+// ========== 禁用后台节流，保证远程画面持续刷新 ==========
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+
 function createWindow () {
-  // 创建无边框无标题窗口，开启GPU加速
   const mainWindow = new BrowserWindow({
     width: 853,
     height: 480,
-    frame: false, // 无边框无标题
+    frame: false,          // 无边框无标题
     titleBarStyle: 'hidden',
     useContentSize: true,
+    show: true,
     webPreferences: {
-      webgl: true, // 开启WebGL支持GPU渲染
+      webgl: true,
       hardwareAcceleration: true,
-      offscreen: false
+      offscreen: false,
+      backgroundThrottling: false  // 禁止后台节流
     }
   })
 
@@ -28,17 +45,10 @@ function createWindow () {
     }
   })
 
-  // 开启开发者工具（可选，调试用）
+  // 开启开发者工具（调试用，取消注释即可）
   // mainWindow.webContents.openDevTools()
 }
 
-// 启用GPU硬件加速
-app.commandLine.appendSwitch('enable-gpu')
-app.commandLine.appendSwitch('enable-gpu-rasterization')
-app.commandLine.appendSwitch('enable-zero-copy')
-app.commandLine.appendSwitch('ignore-gpu-blocklist')
-
-// 当Electron完成初始化并准备创建浏览器窗口时调用此方法
 app.whenReady().then(() => {
   createWindow()
 
@@ -47,7 +57,6 @@ app.whenReady().then(() => {
   })
 })
 
-// 当所有窗口都关闭时退出，除了 macOS
 app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') app.quit()
 })
