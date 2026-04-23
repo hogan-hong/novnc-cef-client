@@ -253,7 +253,16 @@ const vncWindows = []
 // ========== HTTP API 服务（接收易语言的控制指令） ==========
 let apiServer = null
 
-function startAPIServer (port = 9527) {
+function startAPIServer (groupIndex) {
+  // ★ 端口按组号分配：组1→38981, 组2→38982, 组3→38983
+  const port = 38980 + groupIndex
+
+  // 如果已有服务先关闭（切换组时）
+  if (apiServer) {
+    try { apiServer.close() } catch (e) {}
+    apiServer = null
+  }
+
   const server = http.createServer((req, res) => {
     // 允许跨域
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -490,7 +499,7 @@ function createVNCWindows (config, groupIndex) {
 
   // ★ 启动HTTP API服务
   if (!apiServer) {
-    startAPIServer(9527)
+    startAPIServer(groupIndex)
   }
 }
 
