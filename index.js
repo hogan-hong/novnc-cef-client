@@ -155,7 +155,6 @@ function createVNCWindows (config, groupIndex) {
   groupItems.forEach((item, i) => {
     const col = i % cols
     const row = Math.floor(i / cols)
-    // ★ 窗口之间重叠1像素，遮住DWM焦点边框的灰色线
     const x = offsetX + col * winW
     const y = offsetY + row * winH
 
