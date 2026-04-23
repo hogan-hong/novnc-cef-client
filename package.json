@@ -5,23 +5,15 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win --publish never",
-    "build:linux": "electron-builder --linux --publish never",
-    "build:mac": "electron-builder --mac --publish never"
+    "build:win": "electron-builder --win --publish never"
   },
   "build": {
     "appId": "com.hogan.novncclient",
     "productName": "NoVNC Client",
     "asar": true,
-    "asarUnpack": [
-      "node_modules/koffi/**/*"
-    ],
     "win": {
       "target": "portable",
       "icon": "icon.ico"
-    },
-    "linux": {
-      "target": "AppImage"
     }
   },
   "keywords": [],
@@ -33,7 +25,6 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
-    "iconv-lite": "^0.7.2",
-    "koffi": "^2.16.1"
+    "iconv-lite": "^0.7.2"
   }
 }

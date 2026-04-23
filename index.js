@@ -2,32 +2,6 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-// ========== Windows API（koffi直接调用） ==========
-let user32 = null
-let FindWindowExW = null
-let SetWindowTextW = null
-let SetWindowLongPtrW = null
-let GetWindowLongPtrW = null
-
-function loadWinAPI () {
-  try {
-    const koffi = require('koffi')
-    user32 = koffi.load('user32.dll')
-
-    FindWindowExW = user32.func('FindWindowExW', 'pointer', ['pointer', 'pointer', 'string16', 'string16'])
-    SetWindowTextW = user32.func('SetWindowTextW', 'bool', ['pointer', 'string16'])
-
-    // 设置窗口owner，同组窗口之间不画焦点过渡层
-    SetWindowLongPtrW = user32.func('SetWindowLongPtrW', 'pointer', ['pointer', 'int32', 'pointer'])
-    GetWindowLongPtrW = user32.func('GetWindowLongPtrW', 'pointer', ['pointer', 'int32'])
-
-    return true
-  } catch (e) {
-    console.error('Failed to load WinAPI:', e.message)
-    return false
-  }
-}
-
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
 app.commandLine.appendSwitch('no-sandbox')
@@ -91,43 +65,12 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题 + 设置同组owner ==========
-function customizeWindow (win, item, ownerHwnd, retryCount = 0) {
-  if (!FindWindowExW) return
-
-  try {
-    const koffi = require('koffi')
-    const hwndBuf = win.getNativeWindowHandle()
-    const hwnd = koffi.as(hwndBuf, 'pointer')
-    if (!hwnd) return
-
-    // 1. 设置第二层标题
-    const child = FindWindowExW(hwnd, null, 'Chrome Legacy Window', null)
-    if (!child) {
-      if (retryCount < 10) {
-        setTimeout(() => customizeWindow(win, item, ownerHwnd, retryCount + 1), 500)
-      }
-      return
-    }
-
-    const childTitle = `${item.index}|${item.controlIP}`
-    SetWindowTextW(child, childTitle)
-    console.log(`Window ${item.index}: layer2 title="${childTitle}"`)
-
-    // 2. 设置owner：窗口2-5的owner设为窗口1
-    // 同owner的窗口之间切换焦点，Windows不会画灰色半透明过渡层
-    if (ownerHwnd && SetWindowLongPtrW) {
-      const GWLP_HWNDPARENT = -8
-      SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, ownerHwnd)
-      console.log(`Window ${item.index}: owner set`)
-    }
-
-  } catch (e) {
-    console.error(`customizeWindow error (window ${item.index}):`, e.message)
-    if (retryCount < 10) {
-      setTimeout(() => customizeWindow(win, item, ownerHwnd, retryCount + 1), 500)
-    }
-  }
+// ========== 设置第二层窗口标题（通过注入JS修改document.title） ==========
+function setLayer2Title (win, item) {
+  const childTitle = `${item.index}|${item.controlIP}`
+  win.webContents.executeJavaScript(`
+    document.title = '${childTitle}';
+  `).catch(() => {})
 }
 
 // ========== 选组界面 ==========
@@ -207,9 +150,8 @@ function createVNCWindows (config, groupIndex) {
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
   const offsetY = Math.floor((workArea.height - totalHeight) / 2)
 
-  const koffi = require('koffi')
+  let firstWin = null
   const windows = []
-  let ownerHwnd = null
 
   groupItems.forEach((item, i) => {
     const col = i % cols
@@ -224,6 +166,7 @@ function createVNCWindows (config, groupIndex) {
       height: winH,
       frame: false,
       title: item.title,      // ★ 第一层标题 = 窗口标题
+      parent: i === 0 ? null : firstWin,  // ★ 窗口2-5的parent设为窗口1，同组不画焦点过渡
       useContentSize: true,
       show: true,
       backgroundColor: '#000000',
@@ -239,22 +182,25 @@ function createVNCWindows (config, groupIndex) {
 
     win.setMenu(null)
 
-    // ★ 防止页面title变更覆盖第一层标题
-    win.on('page-title-updated', (event) => {
-      event.preventDefault()
-      win.setTitle(item.title)
-    })
-
-    // ★ 获取第一个窗口的hwnd作为owner
+    // ★ 记录第一个窗口
     if (i === 0) {
-      ownerHwnd = koffi.as(win.getNativeWindowHandle(), 'pointer')
+      firstWin = win
     }
 
-    // ★ 页面加载后设置第二层标题 + owner
+    // ★ 防止页面title变更覆盖第一层标题
+    win.on('page-title-updated', (event, title) => {
+      event.preventDefault()
+      // 第一层保持窗口标题
+      win.setTitle(item.title)
+      // 但把第二层标题注入到页面内部
+      setLayer2Title(win, item)
+    })
+
+    // ★ 页面加载后设置第二层标题
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => {
-        customizeWindow(win, item, i === 0 ? null : ownerHwnd)
-      }, 500)
+        setLayer2Title(win, item)
+      }, 300)
     })
 
     // 加载URL
@@ -273,8 +219,6 @@ function createVNCWindows (config, groupIndex) {
 
 // ========== 主流程 ==========
 app.whenReady().then(() => {
-  loadWinAPI()
-
   const config = readConfig()
 
   if (!config) {
