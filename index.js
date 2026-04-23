@@ -271,7 +271,7 @@ function createVNCWindows (config, groupIndex) {
   const workArea = primaryDisplay.workAreaSize
 
   const winW = 853
-  const winH = 500
+  const winH = 520
 
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
@@ -315,13 +315,8 @@ function createVNCWindows (config, groupIndex) {
       win.setTitle(item.title)
     })
 
-    // ★ 页面加载后设置第二层标题 + 注入黑色背景
+    // ★ 页面加载后设置第二层标题
     win.webContents.on('did-finish-load', () => {
-      win.webContents.insertCSS(`
-        html, body { background: #000 !important; overflow: hidden !important; }
-      `)
-      // ★ 页面内容贴顶：滚到最顶部
-      win.webContents.executeJavaScript('window.scrollTo(0, 0)').catch(() => {})
       setTimeout(() => {
         setLayer2Title(win, item)
       }, 500)
