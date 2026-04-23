@@ -29,6 +29,7 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
-    "iconv-lite": "^0.7.2"
+    "iconv-lite": "^0.7.2",
+    "koffi": "^2.16.1"
   }
 }

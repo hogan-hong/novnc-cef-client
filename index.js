@@ -1,8 +1,34 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const iconv = require('iconv-lite')
-const { execFile } = require('child_process')
+
+// ========== Windows API（koffi直接调用，不依赖PowerShell） ==========
+let user32 = null
+let dwmapi = null
+let FindWindowExW = null
+let SetWindowTextW = null
+let GetWindowLongW = null
+let SetWindowLongW = null
+let DwmSetWindowAttribute = null
+
+function loadWinAPI () {
+  try {
+    const koffi = require('koffi')
+    user32 = koffi.load('user32.dll')
+    dwmapi = koffi.load('dwmapi.dll')
+
+    // 声明函数
+    FindWindowExW = user32.func('FindWindowExW', 'pointer', ['pointer', 'pointer', 'string16', 'string16'])
+    SetWindowTextW = user32.func('SetWindowTextW', 'bool', ['pointer', 'string16'])
+    GetWindowLongW = user32.func('GetWindowLongW', 'int32', ['pointer', 'int32'])
+    SetWindowLongW = user32.func('SetWindowLongW', 'int32', ['pointer', 'int32', 'int32'])
+    DwmSetWindowAttribute = dwmapi.func('DwmSetWindowAttribute', 'int32', ['pointer', 'int32', 'pointer', 'int32'])
+    return true
+  } catch (e) {
+    console.error('Failed to load WinAPI:', e.message)
+    return false
+  }
+}
 
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -36,7 +62,8 @@ function readConfig () {
 
   if (!configPath) return null
 
-  // GBK编码读取（易语言配置文件默认GBK）
+  // GBK编码读取
+  const iconv = require('iconv-lite')
   const rawBuf = fs.readFileSync(configPath)
   const content = iconv.decode(rawBuf, 'gbk')
 
@@ -67,78 +94,63 @@ function readConfig () {
   return config
 }
 
-// ========== Windows API：设置子窗口标题 + 去除DWM阴影 ==========
-function applyWindowCustomizations (win, item, retryCount = 0) {
-  const hwnd = win.getNativeWindowHandle()
-  const hwndVal = hwnd.length === 8
-    ? hwnd.readBigUInt64LE().toString(16)
-    : hwnd.readUInt32LE().toString(16)
-  const hwndHex = hwndVal.toUpperCase()
-  const childTitle = `${item.index}|${item.controlIP}`
+// ========== 设置第二层窗口标题 + 去除焦点过渡 ==========
+function customizeWindow (win, item, retryCount = 0) {
+  if (!FindWindowExW) return
 
-  // PowerShell脚本：设置Chrome Legacy Window标题 + 去除DWM阴影
-  const psScript = `
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class WinAPI {
-  [DllImport("user32.dll")]
-  public static extern IntPtr FindWindowEx(IntPtr p, IntPtr c, string cn, string t);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-  public static extern bool SetWindowTextW(IntPtr h, string t);
-  [DllImport("user32.dll")]
-  public static extern int GetWindowLong(IntPtr h, int i);
-  [DllImport("user32.dll")]
-  public static extern int SetWindowLong(IntPtr h, int i, int v);
-  [DllImport("dwmapi.dll")]
-  public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int sz);
-}
-"@
+  try {
+    const hwndBuf = win.getNativeWindowHandle()
+    // 构造指针
+    const koffi = require('koffi')
+    const hwnd = koffi.as(hwndBuf, 'pointer')
+    if (!hwnd) return
 
-$parent = [IntPtr]0x${hwndHex}
-if ($parent -eq [IntPtr]::Zero) { exit 1 }
-
-# 1. 查找并设置 Chrome Legacy Window 子窗口标题
-$child = [WinAPI]::FindWindowEx($parent, [IntPtr]::Zero, "Chrome Legacy Window", $null)
-if ($child -eq [IntPtr]::Zero) {
-  # 子窗口可能还没创建，返回2让调用方重试
-  [Console]::Exit(2)
-}
-[WinAPI]::SetWindowTextW($child, "${childTitle}")
-
-# 2. 去除窗口阴影：通过DWM禁用NC渲染
-$val = 2
-[WinAPI]::DwmSetWindowAttribute($parent, 2, [ref]$val, 4)
-
-# 3. 移除WS_THICKFRAME样式（消除边框光影）
-$style = [WinAPI]::GetWindowLong($parent, -16)
-$style = $style -band (-bnot 0x00040000)
-[WinAPI]::SetWindowLong($parent, -16, $style)
-
-# 4. 移除WS_EX_WINDOWEDGE扩展样式
-$exStyle = [WinAPI]::GetWindowLong($parent, -20)
-$exStyle = $exStyle -band (-bnot 0x00000100)
-[WinAPI]::SetWindowLong($parent, -20, $exStyle)
-`
-
-  const tmpFile = path.join(app.getPath('temp'), `novnc_${item.index}_${Date.now()}.ps1`)
-  fs.writeFileSync(tmpFile, psScript, 'utf-8')
-
-  execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', tmpFile], (err, stdout, stderr) => {
-    // 清理临时文件
-    fs.unlink(tmpFile, () => {})
-
-    if (err) {
-      // 退出码2表示子窗口还没创建，重试
-      if (err.code === 2 || (err.message && err.message.includes('Exit Code: 2'))) {
-        if (retryCount < 5) {
-          setTimeout(() => applyWindowCustomizations(win, item, retryCount + 1), 500)
-        }
-      } else {
-        console.error(`WinAPI error (window ${item.index}):`, err.message)
+    // 1. 找到 Chrome Legacy Window 子窗口，设置标题为 "编号|控制IP"
+    const childClass = 'Chrome Legacy Window\u0000'
+    const child = FindWindowExW(hwnd, null, childClass, null)
+    if (!child) {
+      // 子窗口还没创建，重试
+      if (retryCount < 10) {
+        setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
       }
+      return
     }
-  })
+
+    const childTitle = `${item.index}|${item.controlIP}`
+    SetWindowTextW(child, childTitle)
+
+    // 2. 去除焦点过渡效果
+    // DWMWA_NCRENDERING_POLICY = 2, DWMNCR_DISABLED = 2
+    // 禁用NC渲染可以去掉焦点切换时的灰色过渡
+    const policyVal = Buffer.alloc(4)
+    policyVal.writeInt32LE(2) // DWMNCR_DISABLED
+    DwmSetWindowAttribute(hwnd, 2, policyVal, 4)
+
+    // 3. 移除WS_THICKFRAME（0x00040000）避免调整大小边框带来的视觉间隙
+    const GWL_STYLE = -16
+    let style = GetWindowLongW(hwnd, GWL_STYLE)
+    style = style & ~0x00040000  // 去掉 WS_THICKFRAME
+    SetWindowLongW(hwnd, GWL_STYLE, style)
+
+    // 4. 设置窗口为不透明，禁用DWM的半透明过渡
+    // DWMWA_EXCLUDED_FROM_DWM_COMPOSITION = 12 (Windows 7+)
+    const excludeVal = Buffer.alloc(4)
+    excludeVal.writeInt32LE(1) // TRUE
+    DwmSetWindowAttribute(hwnd, 12, excludeVal, 4)
+
+    // 5. DWMWA_ALLOW_NCPAINT = 16, 设为1允许自己画NC区域
+    const ncPaintVal = Buffer.alloc(4)
+    ncPaintVal.writeInt32LE(1)
+    DwmSetWindowAttribute(hwnd, 16, ncPaintVal, 4)
+
+    console.log(`Window ${item.index} customized: layer2="${childTitle}"`)
+
+  } catch (e) {
+    console.error(`customizeWindow error (window ${item.index}):`, e.message)
+    if (retryCount < 10) {
+      setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
+    }
+  }
 }
 
 // ========== 选组界面 ==========
@@ -211,7 +223,7 @@ function createVNCWindows (config, groupIndex) {
   const winW = 853
   const winH = 480
 
-  // 窗口排列：适配2K(2560x1440)，3个一行+2个一行
+  // 5个窗口适配2K：3+2排列
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
   const totalWidth = cols * winW
@@ -230,7 +242,7 @@ function createVNCWindows (config, groupIndex) {
       y: y,
       width: winW,
       height: winH,
-      frame: false,           // 无边框
+      frame: false,
       title: item.title,      // ★ 第一层标题 = 窗口标题
       useContentSize: true,
       show: true,
@@ -253,17 +265,12 @@ function createVNCWindows (config, groupIndex) {
       win.setTitle(item.title)
     })
 
-    // ★ 注入CSS去除页面内阴影/边框
+    // ★ 页面加载后设置第二层标题 + 去除焦点过渡
     win.webContents.on('did-finish-load', () => {
-      win.webContents.insertCSS(`
-        * { box-shadow: none !important; outline: none !important; }
-        html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; border: none !important; }
-      `)
-
-      // ★ 通过Windows API设置第二层标题 + 去除DWM阴影
+      // 延迟执行，确保Chrome Legacy Window子窗口已创建
       setTimeout(() => {
-        applyWindowCustomizations(win, item)
-      }, 300)
+        customizeWindow(win, item)
+      }, 500)
     })
 
     // 加载URL
@@ -280,6 +287,12 @@ function createVNCWindows (config, groupIndex) {
 
 // ========== 主流程 ==========
 app.whenReady().then(() => {
+  // 加载Windows API
+  const apiLoaded = loadWinAPI()
+  if (!apiLoaded) {
+    console.warn('WinAPI not available (non-Windows platform or koffi load failed)')
+  }
+
   const config = readConfig()
 
   if (!config) {
