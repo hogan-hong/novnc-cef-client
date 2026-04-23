@@ -27,5 +27,8 @@
   "devDependencies": {
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.7.2"
   }
 }

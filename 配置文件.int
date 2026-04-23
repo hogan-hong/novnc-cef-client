@@ -1,0 +1,53 @@
+[配置]
+组1名称=D
+组2名称=E
+组3名称=F
+组数量=3
+URL1=http://172.16.103.16:5801/vnc_lite.html?autoconnect=true&host=172.16.103.16&port=5901&encrypt=0
+URL2=http://172.16.103.17:5801/vnc_lite.html?autoconnect=true&host=172.16.103.17&port=5901&encrypt=0
+URL3=http://172.16.103.18:5801/vnc_lite.html?autoconnect=true&host=172.16.103.18&port=5901&encrypt=0
+URL4=http://172.16.103.19:5801/vnc_lite.html?autoconnect=true&host=172.16.103.19&port=5901&encrypt=0
+URL5=http://172.16.103.20:5801/vnc_lite.html?autoconnect=true&host=172.16.103.20&port=5901&encrypt=0
+URL6=http://172.16.103.21:5801/vnc_lite.html?autoconnect=true&host=172.16.103.21&port=5901&encrypt=0
+URL7=http://172.16.103.22:5801/vnc_lite.html?autoconnect=true&host=172.16.103.22&port=5901&encrypt=0
+URL8=http://172.16.103.23:5801/vnc_lite.html?autoconnect=true&host=172.16.103.23&port=5901&encrypt=0
+URL9=http://172.16.103.24:5801/vnc_lite.html?autoconnect=true&host=172.16.103.24&port=5901&encrypt=0
+URL10=http://172.16.103.25:5801/vnc_lite.html?autoconnect=true&host=172.16.103.25&port=5901&encrypt=0
+URL11=http://172.16.103.26:5801/vnc_lite.html?autoconnect=true&host=172.16.103.26&port=5901&encrypt=0
+URL12=http://172.16.103.27:5801/vnc_lite.html?autoconnect=true&host=172.16.103.27&port=5901&encrypt=0
+URL13=http://172.16.103.28:5801/vnc_lite.html?autoconnect=true&host=172.16.103.28&port=5901&encrypt=0
+URL14=http://172.16.103.29:5801/vnc_lite.html?autoconnect=true&host=172.16.103.29&port=5901&encrypt=0
+URL15=http://172.16.103.30:5801/vnc_lite.html?autoconnect=true&host=172.16.103.30&port=5901&encrypt=0
+
+
+窗口标题1=iPhone Se2 D1
+窗口标题2=iPhone Se2 D6
+窗口标题3=iPhone Se2 D3
+窗口标题4=iPhone Se2 D4
+窗口标题5=iPhone Se2 D5
+窗口标题6=iPhone Se2 E1
+窗口标题7=iPhone Se2 E2
+窗口标题8=iPhone Se2 E3
+窗口标题9=iPhone Se2 E4
+窗口标题10=iPhone Se2 E5
+窗口标题11=iPhone Se2 F1
+窗口标题12=iPhone Se2 F2
+窗口标题13=iPhone Se2 F3
+窗口标题14=iPhone Se2 F4
+窗口标题15=iPhone Se2 F5
+
+控制IP1=172.16.103.16
+控制IP2=172.16.103.17
+控制IP3=172.16.103.18
+控制IP4=172.16.103.19
+控制IP5=172.16.103.20
+控制IP6=172.16.103.21
+控制IP7=172.16.103.22
+控制IP8=172.16.103.23
+控制IP9=172.16.103.24
+控制IP10=172.16.103.25
+控制IP11=172.16.103.26
+控制IP12=172.16.103.27
+控制IP13=172.16.103.28
+控制IP14=172.16.103.29
+控制IP15=172.16.103.30
