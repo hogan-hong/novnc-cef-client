@@ -359,71 +359,59 @@ function handleControlCommand (data) {
 }
 
 // ========== 发送控制消息到VNC窗口的lite.html ==========
+// ★ 所有坐标操作都在浏览器内部做缩放转换（和全部控制E.html一致）
+// ★ 大漠传进来的是窗口像素坐标，需要在页面内转成设备实际分辨率坐标
 function sendToVNC (win, data) {
   const { action, x, y, keysym, code, down, deltaY, deltaX, text, buttons } = data
 
-  let messageType = null
-  let messageData = {}
-
-  switch (action) {
-    case 'click':
-    case 'clickAll':
-      // 点击 = mousedown + mouseup
-      win.webContents.executeJavaScript(`
-        (function() {
-          var rfb = document.querySelector('#screen')?.__rfb || window.rfb;
-          if (rfb && rfb._sock) {
-            RFB.messages.pointerEvent(rfb._sock, ${x}, ${y}, 1);
-            RFB.messages.pointerEvent(rfb._sock, ${x}, ${y}, 0);
-          }
-        })()
-      `).catch(() => {})
-      return
-
-    case 'mousedown':
-    case 'mousedownAll':
-      messageType = 'sync-mouse-event'
-      messageData = { eventType: 'mousedown', x, y, buttons: buttons || 1 }
-      break
-
-    case 'mouseup':
-    case 'mouseupAll':
-      messageType = 'sync-mouse-event'
-      messageData = { eventType: 'mouseup', x, y, buttons: 0 }
-      break
-
-    case 'mousemove':
-    case 'mousemoveAll':
-      messageType = 'sync-mouse-event'
-      messageData = { eventType: 'mousemove', x, y, buttons: buttons || 0 }
-      break
-
-    case 'keypress':
-    case 'keypressAll':
-      messageType = 'sync-key-event'
-      messageData = { eventType: down ? 'keydown' : 'keyup', keysym, code }
-      break
-
-    case 'scroll':
-    case 'scrollAll':
-      messageType = 'sync-wheel-event'
-      messageData = { deltaY: deltaY || 0, deltaX: deltaX || 0, x, y }
-      break
-
-    case 'clipboard':
-    case 'clipboardAll':
-      messageType = 'sync-clipboard'
-      messageData = { text }
-      break
-
-    default:
-      throw new Error(`Unknown action: ${action}`)
+  // 键盘和剪贴板不需要坐标转换
+  if (action === 'keypress' || action === 'keypressAll') {
+    win.webContents.executeJavaScript(`
+      window.postMessage(${JSON.stringify({ type: 'sync-key-event', eventType: down ? 'keydown' : 'keyup', keysym, code })}, '*')
+    `).catch(() => {})
+    return
   }
 
-  // 通过 executeJavaScript 发送 postMessage 到lite.html
-  win.webContents.executeJavaScript(`
-    window.postMessage(${JSON.stringify({ type: messageType, ...messageData })}, '*')
-  `).catch(() => {})
+  if (action === 'clipboard' || action === 'clipboardAll') {
+    win.webContents.executeJavaScript(`
+      window.postMessage(${JSON.stringify({ type: 'sync-clipboard', text })}, '*')
+    `).catch(() => {})
+    return
+  }
+
+  // ★ 鼠标/滚轮操作：在页面内部做坐标缩放
+  // 获取canvas的实际分辨率和显示尺寸，计算缩放比
+  const jsCode = `
+    (function() {
+      var screen = document.getElementById('screen');
+      var canvas = screen ? screen.querySelector('canvas') : null;
+      if (!canvas) return;
+      var rect = canvas.getBoundingClientRect();
+      var scaleX = canvas.width / rect.width;
+      var scaleY = canvas.height / rect.height;
+      var realX = Math.round((${x || 0}) * scaleX);
+      var realY = Math.round((${y || 0}) * scaleY);
+      var action = '${action}';
+      var buttons = ${buttons || 0};
+      var deltaY = ${deltaY || 0};
+      var deltaX = ${deltaX || 0};
+
+      if (action === 'click' || action === 'clickAll') {
+        window.postMessage({type:'sync-mouse-event', eventType:'mousedown', x:realX, y:realY, buttons:1}, '*');
+        window.postMessage({type:'sync-mouse-event', eventType:'mouseup', x:realX, y:realY, buttons:0}, '*');
+      } else if (action === 'mousedown' || action === 'mousedownAll') {
+        window.postMessage({type:'sync-mouse-event', eventType:'mousedown', x:realX, y:realY, buttons:1}, '*');
+      } else if (action === 'mouseup' || action === 'mouseupAll') {
+        window.postMessage({type:'sync-mouse-event', eventType:'mouseup', x:realX, y:realY, buttons:0}, '*');
+      } else if (action === 'mousemove' || action === 'mousemoveAll') {
+        window.postMessage({type:'sync-mouse-event', eventType:'mousemove', x:realX, y:realY, buttons:buttons}, '*');
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        window.postMessage({type:'sync-wheel-event', deltaY:deltaY, deltaX:deltaX, x:realX, y:realY}, '*');
+      }
+    })()
+  `
+
+  win.webContents.executeJavaScript(jsCode).catch(() => {})
 }
 
 // ========== 创建VNC窗口 ==========
