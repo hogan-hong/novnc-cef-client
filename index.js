@@ -4,15 +4,29 @@ const fs = require('fs')
 
 // ========== Windows API（koffi直接调用） ==========
 let user32 = null
+let dwmapi = null
 let FindWindowExW = null
 let SetWindowTextW = null
+let DwmExtendFrameIntoClientArea = null
 
 function loadWinAPI () {
   try {
     const koffi = require('koffi')
     user32 = koffi.load('user32.dll')
+    dwmapi = koffi.load('dwmapi.dll')
+
     FindWindowExW = user32.func('FindWindowExW', 'pointer', ['pointer', 'pointer', 'string16', 'string16'])
     SetWindowTextW = user32.func('SetWindowTextW', 'bool', ['pointer', 'string16'])
+
+    // MARGINS结构体: { left, right, top, bottom } 各4字节
+    const MARGINS = koffi.struct('MARGINS', {
+      left: 'int32',
+      right: 'int32',
+      top: 'int32',
+      bottom: 'int32'
+    })
+    DwmExtendFrameIntoClientArea = dwmapi.func('DwmExtendFrameIntoClientArea', 'int32', ['pointer', MARGINS])
+
     return true
   } catch (e) {
     console.error('Failed to load WinAPI:', e.message)
@@ -83,8 +97,8 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题（Chrome Legacy Window） ==========
-function setLayer2Title (win, item, retryCount = 0) {
+// ========== 设置第二层窗口标题 + 消除焦点过渡层 ==========
+function customizeWindow (win, item, retryCount = 0) {
   if (!FindWindowExW) return
 
   try {
@@ -93,11 +107,11 @@ function setLayer2Title (win, item, retryCount = 0) {
     const hwnd = koffi.as(hwndBuf, 'pointer')
     if (!hwnd) return
 
-    // 查找 Chrome Legacy Window 子窗口
+    // 1. 查找 Chrome Legacy Window 子窗口，设置标题为 "编号|控制IP"
     const child = FindWindowExW(hwnd, null, 'Chrome Legacy Window', null)
     if (!child) {
       if (retryCount < 10) {
-        setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+        setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
       }
       return
     }
@@ -106,10 +120,19 @@ function setLayer2Title (win, item, retryCount = 0) {
     SetWindowTextW(child, childTitle)
     console.log(`Window ${item.index}: layer2 title set to "${childTitle}"`)
 
+    // 2. 消除焦点切换时的灰色半透明过渡层
+    // DwmExtendFrameIntoClientArea 将frame扩展到整个客户区(-1,-1,-1,-1)
+    // 这样DWM认为整个窗口都是frame区域，不会再在边缘画额外的过渡层
+    if (DwmExtendFrameIntoClientArea) {
+      const margins = { left: -1, right: -1, top: -1, bottom: -1 }
+      const hr = DwmExtendFrameIntoClientArea(hwnd, margins)
+      console.log(`Window ${item.index}: DwmExtendFrameIntoClientArea result=${hr}`)
+    }
+
   } catch (e) {
-    console.error(`setLayer2Title error (window ${item.index}):`, e.message)
+    console.error(`customizeWindow error (window ${item.index}):`, e.message)
     if (retryCount < 10) {
-      setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+      setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
     }
   }
 }
@@ -229,7 +252,7 @@ function createVNCWindows (config, groupIndex) {
     // ★ 页面加载后设置第二层标题
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => {
-        setLayer2Title(win, item)
+        customizeWindow(win, item)
       }, 500)
     })
 
