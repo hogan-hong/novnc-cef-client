@@ -155,8 +155,9 @@ function createVNCWindows (config, groupIndex) {
   groupItems.forEach((item, i) => {
     const col = i % cols
     const row = Math.floor(i / cols)
-    const x = offsetX + col * winW
-    const y = offsetY + row * winH
+    // ★ 窗口之间重叠1像素，遮住DWM焦点边框的灰色线
+    const x = offsetX + col * (winW - 1)
+    const y = offsetY + row * (winH - 1)
 
     const win = new BrowserWindow({
       x: x,
