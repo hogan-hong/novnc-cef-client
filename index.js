@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const { exec } = require('child_process')
 
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -65,12 +66,35 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题（通过注入JS修改document.title） ==========
-function setLayer2Title (win, item) {
-  const childTitle = `${item.index}|${item.controlIP}`
-  win.webContents.executeJavaScript(`
-    document.title = '${childTitle}';
-  `).catch(() => {})
+// ========== 设置第二层窗口标题（PowerShell调Win32 API） ==========
+function setLayer2Title (win, item, retryCount = 0) {
+  try {
+    const hwndBuf = win.getNativeWindowHandle()
+    // 读取hwnd的16进制值
+    let hwndHex
+    if (hwndBuf.length === 8) {
+      hwndHex = hwndBuf.readBigUInt64LE().toString(16)
+    } else {
+      hwndHex = hwndBuf.readUInt32LE().toString(16)
+    }
+    hwndHex = hwndHex.toUpperCase()
+
+    const childTitle = `${item.index}|${item.controlIP}`
+
+    // 用PowerShell内联脚本调用Win32 API设置Chrome Legacy Window标题
+    const psCmd = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{[DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string n,string t);[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool SetWindowText(IntPtr h,string t);}' -PassThru | Out-Null; $p=[IntPtr]0x${hwndHex}; $c=[W]::FindWindowEx($p,[IntPtr]::Zero,'Chrome Legacy Window',$null); if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${childTitle}');write-host 'OK'}else{write-host 'RETRY'}`
+
+    exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCmd}"`, { timeout: 5000 }, (err, stdout) => {
+      const output = (stdout || '').trim()
+      if (output === 'RETRY' && retryCount < 10) {
+        setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+      }
+    })
+  } catch (e) {
+    if (retryCount < 10) {
+      setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
+    }
+  }
 }
 
 // ========== 选组界面 ==========
@@ -125,6 +149,66 @@ function showGroupSelector (config) {
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
+// ========== 右下角退出按钮 ==========
+let exitWindow = null
+
+function createExitButton () {
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const workArea = primaryDisplay.workAreaSize
+
+  exitWindow = new BrowserWindow({
+    x: workArea.width - 70,
+    y: workArea.height - 40,
+    width: 60,
+    height: 30,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  })
+
+  exitWindow.setMenu(null)
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: transparent; width: 60px; height: 30px; }
+  button {
+    width: 60px; height: 30px;
+    background: #e94560; color: #fff;
+    border: none; border-radius: 4px;
+    font-size: 12px; font-weight: bold;
+    cursor: pointer;
+    font-family: "Microsoft YaHei", sans-serif;
+  }
+  button:hover { background: #c23152; }
+</style>
+</head>
+<body>
+<button onclick="quit()">退出</button>
+<script>
+  const { ipcRenderer } = require('electron')
+  function quit() { ipcRenderer.send('exit-app') }
+</script>
+</body>
+</html>`
+
+  exitWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+
+  // 防止退出窗口被关闭导致程序退出
+  exitWindow.on('close', (e) => {
+    e.preventDefault()
+  })
+}
+
 // ========== 创建VNC窗口 ==========
 function createVNCWindows (config, groupIndex) {
   if (selectWindow) {
@@ -164,7 +248,7 @@ function createVNCWindows (config, groupIndex) {
       width: winW,
       height: winH,
       frame: false,
-      transparent: true,     // ★ 透明窗口，DWM不画焦点边框
+      transparent: true,
       title: item.title,      // ★ 第一层标题 = 窗口标题
       useContentSize: true,
       show: true,
@@ -182,12 +266,9 @@ function createVNCWindows (config, groupIndex) {
     win.setMenu(null)
 
     // ★ 防止页面title变更覆盖第一层标题
-    win.on('page-title-updated', (event, title) => {
+    win.on('page-title-updated', (event) => {
       event.preventDefault()
-      // 第一层保持窗口标题
       win.setTitle(item.title)
-      // 但把第二层标题注入到页面内部
-      setLayer2Title(win, item)
     })
 
     // ★ 页面加载后设置第二层标题 + 注入黑色背景
@@ -197,21 +278,17 @@ function createVNCWindows (config, groupIndex) {
       `)
       setTimeout(() => {
         setLayer2Title(win, item)
-      }, 300)
+      }, 500)
     })
 
     // 加载URL
     win.loadURL(item.url)
 
-    // ESC键退出该窗口
-    win.webContents.on('before-input-event', (event, input) => {
-      if (input.key === 'Escape') {
-        win.close()
-      }
-    })
-
     windows.push(win)
   })
+
+  // ★ 创建右下角退出按钮
+  createExitButton()
 }
 
 // ========== 主流程 ==========
@@ -241,11 +318,18 @@ app.whenReady().then(() => {
   app.on('activate', function () {})
 })
 
+// 选组消息
 ipcMain.on('select-group', (event, groupIndex) => {
   const config = readConfig()
   createVNCWindows(config, groupIndex)
 })
 
-app.on('window-all-closed', function () {
+// 退出程序
+ipcMain.on('exit-app', () => {
   app.quit()
+})
+
+// 只在所有VNC窗口关闭时退出（排除退出按钮窗口）
+app.on('window-all-closed', function () {
+  // 不自动退出，由退出按钮控制
 })
