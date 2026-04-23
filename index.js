@@ -278,7 +278,7 @@ function createVNCWindows (config, groupIndex) {
   const totalWidth = cols * winW
   const totalHeight = rows * winH
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
-  const offsetY = Math.floor((workArea.height - totalHeight) / 2)
+  const offsetY = 0   // ★ 从屏幕最顶部开始排列
 
   groupItems.forEach((item, i) => {
     const col = i % cols
