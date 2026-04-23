@@ -156,8 +156,8 @@ function createVNCWindows (config, groupIndex) {
     const col = i % cols
     const row = Math.floor(i / cols)
     // ★ 窗口之间重叠1像素，遮住DWM焦点边框的灰色线
-    const x = offsetX + col * (winW - 1)
-    const y = offsetY + row * (winH - 1)
+    const x = offsetX + col * winW
+    const y = offsetY + row * winH
 
     const win = new BrowserWindow({
       x: x,
@@ -165,6 +165,7 @@ function createVNCWindows (config, groupIndex) {
       width: winW,
       height: winH,
       frame: false,
+      transparent: true,     // ★ 透明窗口，DWM不画焦点边框
       title: item.title,      // ★ 第一层标题 = 窗口标题
       useContentSize: true,
       show: true,
@@ -190,8 +191,11 @@ function createVNCWindows (config, groupIndex) {
       setLayer2Title(win, item)
     })
 
-    // ★ 页面加载后设置第二层标题
+    // ★ 页面加载后设置第二层标题 + 注入黑色背景
     win.webContents.on('did-finish-load', () => {
+      win.webContents.insertCSS(`
+        html, body { background: #000 !important; }
+      `)
       setTimeout(() => {
         setLayer2Title(win, item)
       }, 300)
