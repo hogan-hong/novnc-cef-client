@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const iconv = require('iconv-lite')
+const { execFile } = require('child_process')
 
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -19,7 +20,6 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
 // ========== 读取配置文件 ==========
 function readConfig () {
-  // 按优先级查找配置文件：exe同目录 → 当前工作目录 → app根目录
   const searchPaths = [
     path.join(path.dirname(app.getPath('exe')), '配置文件.int'),
     path.join(process.cwd(), '配置文件.int'),
@@ -34,20 +34,14 @@ function readConfig () {
     }
   }
 
-  if (!configPath) {
-    return null
-  }
+  if (!configPath) return null
 
-  // 用GBK编码读取（易语言配置文件默认GBK）
+  // GBK编码读取（易语言配置文件默认GBK）
   const rawBuf = fs.readFileSync(configPath)
   const content = iconv.decode(rawBuf, 'gbk')
 
-  const config = {
-    groups: [],   // [{name: 'D'}, {name: 'E'}, ...]
-    items: []     // [{url, title, controlIP}, ...]
-  }
+  const config = { groups: [], items: [] }
 
-  // 解析组
   for (let i = 1; i <= 10; i++) {
     const match = content.match(new RegExp(`组${i}名称=(.+)`, 'm'))
     if (match && match[1].trim()) {
@@ -55,7 +49,6 @@ function readConfig () {
     }
   }
 
-  // 解析每个条目
   for (let i = 1; i <= 100; i++) {
     const urlMatch = content.match(new RegExp(`URL${i}=(.+)`, 'm'))
     const titleMatch = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
@@ -72,6 +65,80 @@ function readConfig () {
   }
 
   return config
+}
+
+// ========== Windows API：设置子窗口标题 + 去除DWM阴影 ==========
+function applyWindowCustomizations (win, item, retryCount = 0) {
+  const hwnd = win.getNativeWindowHandle()
+  const hwndVal = hwnd.length === 8
+    ? hwnd.readBigUInt64LE().toString(16)
+    : hwnd.readUInt32LE().toString(16)
+  const hwndHex = hwndVal.toUpperCase()
+  const childTitle = `${item.index}|${item.controlIP}`
+
+  // PowerShell脚本：设置Chrome Legacy Window标题 + 去除DWM阴影
+  const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WinAPI {
+  [DllImport("user32.dll")]
+  public static extern IntPtr FindWindowEx(IntPtr p, IntPtr c, string cn, string t);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern bool SetWindowTextW(IntPtr h, string t);
+  [DllImport("user32.dll")]
+  public static extern int GetWindowLong(IntPtr h, int i);
+  [DllImport("user32.dll")]
+  public static extern int SetWindowLong(IntPtr h, int i, int v);
+  [DllImport("dwmapi.dll")]
+  public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int sz);
+}
+"@
+
+$parent = [IntPtr]0x${hwndHex}
+if ($parent -eq [IntPtr]::Zero) { exit 1 }
+
+# 1. 查找并设置 Chrome Legacy Window 子窗口标题
+$child = [WinAPI]::FindWindowEx($parent, [IntPtr]::Zero, "Chrome Legacy Window", $null)
+if ($child -eq [IntPtr]::Zero) {
+  # 子窗口可能还没创建，返回2让调用方重试
+  [Console]::Exit(2)
+}
+[WinAPI]::SetWindowTextW($child, "${childTitle}")
+
+# 2. 去除窗口阴影：通过DWM禁用NC渲染
+$val = 2
+[WinAPI]::DwmSetWindowAttribute($parent, 2, [ref]$val, 4)
+
+# 3. 移除WS_THICKFRAME样式（消除边框光影）
+$style = [WinAPI]::GetWindowLong($parent, -16)
+$style = $style -band (-bnot 0x00040000)
+[WinAPI]::SetWindowLong($parent, -16, $style)
+
+# 4. 移除WS_EX_WINDOWEDGE扩展样式
+$exStyle = [WinAPI]::GetWindowLong($parent, -20)
+$exStyle = $exStyle -band (-bnot 0x00000100)
+[WinAPI]::SetWindowLong($parent, -20, $exStyle)
+`
+
+  const tmpFile = path.join(app.getPath('temp'), `novnc_${item.index}_${Date.now()}.ps1`)
+  fs.writeFileSync(tmpFile, psScript, 'utf-8')
+
+  execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', tmpFile], (err, stdout, stderr) => {
+    // 清理临时文件
+    fs.unlink(tmpFile, () => {})
+
+    if (err) {
+      // 退出码2表示子窗口还没创建，重试
+      if (err.code === 2 || (err.message && err.message.includes('Exit Code: 2'))) {
+        if (retryCount < 5) {
+          setTimeout(() => applyWindowCustomizations(win, item, retryCount + 1), 500)
+        }
+      } else {
+        console.error(`WinAPI error (window ${item.index}):`, err.message)
+      }
+    }
+  })
 }
 
 // ========== 选组界面 ==========
@@ -92,33 +159,18 @@ function showGroupSelector (config) {
 
   selectWindow.setMenu(null)
 
-  // 生成选组界面HTML
   let html = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { 
-    font-family: "Microsoft YaHei", sans-serif; 
-    background: #1a1a2e; 
-    color: #eee; 
-    padding: 20px;
-  }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
   h2 { text-align: center; margin-bottom: 18px; color: #e94560; font-size: 18px; }
   .group-btn {
-    display: block;
-    width: 100%;
-    padding: 14px;
-    margin-bottom: 12px;
-    font-size: 16px;
-    font-weight: bold;
-    color: #fff;
-    background: #16213e;
-    border: 2px solid #e94560;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s;
+    display: block; width: 100%; padding: 14px; margin-bottom: 12px;
+    font-size: 16px; font-weight: bold; color: #fff;
+    background: #16213e; border: 2px solid #e94560; border-radius: 8px; cursor: pointer;
   }
   .group-btn:hover { background: #e94560; }
 </style>
@@ -126,7 +178,7 @@ function showGroupSelector (config) {
 <body>
 <h2>选择要启动的分组</h2>`
 
-  config.groups.forEach((g, idx) => {
+  config.groups.forEach((g) => {
     const startIdx = (g.index - 1) * 5 + 1
     const endIdx = g.index * 5
     html += `<button class="group-btn" onclick="selectGroup(${g.index})">控制 ${g.name} 组（编号 ${startIdx}-${endIdx}）</button>\n`
@@ -134,9 +186,7 @@ function showGroupSelector (config) {
 
   html += `<script>
     const { ipcRenderer } = require('electron')
-    function selectGroup(groupIndex) {
-      ipcRenderer.send('select-group', groupIndex)
-    }
+    function selectGroup(groupIndex) { ipcRenderer.send('select-group', groupIndex) }
   </script>
 </body></html>`
 
@@ -145,35 +195,29 @@ function showGroupSelector (config) {
 
 // ========== 创建VNC窗口 ==========
 function createVNCWindows (config, groupIndex) {
-  // 关闭选组窗口
   if (selectWindow) {
     selectWindow.close()
     selectWindow = null
   }
 
-  // 计算该组的起始编号 (组1→1-5, 组2→6-10, 组3→11-15)
   const startIdx = (groupIndex - 1) * 5
   const groupItems = config.items.slice(startIdx, startIdx + 5)
 
-  if (groupItems.length === 0) {
-    return
-  }
+  if (groupItems.length === 0) return
 
-  // 屏幕尺寸计算排列位置：5个窗口横排
-  const { screen } = require('electron')
   const primaryDisplay = screen.getPrimaryDisplay()
-  const screenWidth = primaryDisplay.workAreaSize.width
-  const screenHeight = primaryDisplay.workAreaSize.height
+  const workArea = primaryDisplay.workAreaSize
 
-  // 窗口大小（根据noVNC内容调整）
   const winW = 853
   const winH = 480
 
-  // 计算窗口排列：尽量铺满屏幕
-  const cols = Math.min(groupItems.length, Math.floor(screenWidth / winW))
+  // 窗口排列：适配2K(2560x1440)，3个一行+2个一行
+  const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
-  const offsetX = Math.floor((screenWidth - cols * winW) / 2)
-  const offsetY = Math.floor((screenHeight - rows * winH) / 2)
+  const totalWidth = cols * winW
+  const totalHeight = rows * winH
+  const offsetX = Math.floor((workArea.width - totalWidth) / 2)
+  const offsetY = Math.floor((workArea.height - totalHeight) / 2)
 
   groupItems.forEach((item, i) => {
     const col = i % cols
@@ -187,9 +231,10 @@ function createVNCWindows (config, groupIndex) {
       width: winW,
       height: winH,
       frame: false,           // 无边框
-      title: item.title,      // 第一层标题 = 窗口标题
+      title: item.title,      // ★ 第一层标题 = 窗口标题
       useContentSize: true,
       show: true,
+      backgroundColor: '#000000',
       webPreferences: {
         webgl: true,
         hardwareAcceleration: true,
@@ -202,23 +247,26 @@ function createVNCWindows (config, groupIndex) {
 
     win.setMenu(null)
 
-    // ★ 关键：设置第一层窗口标题（Chrome_WidgetWin_1 的标题）
-    win.setTitle(item.title)
-
-    // ★ 关键：通过注入JS修改第二层（Chrome_RenderWidgetHostHWND）的属性
-    // 在页面加载完成后，给 document.title 设置为 "编号|控制IP" 格式
-    // 这样大漠插件可以通过 AccessibleName 或其他方式获取到
-    win.webContents.on('did-finish-load', () => {
-      // 第二层标题 = 编号|控制IP
-      const renderTitle = `${item.index}|${item.controlIP}`
-      win.webContents.executeJavaScript(`
-        document.title = '${renderTitle}';
-      `)
-      // 同时保持第一层标题为窗口标题
+    // ★ 防止页面title变更覆盖第一层标题
+    win.on('page-title-updated', (event) => {
+      event.preventDefault()
       win.setTitle(item.title)
     })
 
-    // 加载对应的URL
+    // ★ 注入CSS去除页面内阴影/边框
+    win.webContents.on('did-finish-load', () => {
+      win.webContents.insertCSS(`
+        * { box-shadow: none !important; outline: none !important; }
+        html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; border: none !important; }
+      `)
+
+      // ★ 通过Windows API设置第二层标题 + 去除DWM阴影
+      setTimeout(() => {
+        applyWindowCustomizations(win, item)
+      }, 300)
+    })
+
+    // 加载URL
     win.loadURL(item.url)
 
     // ESC键退出该窗口
@@ -248,20 +296,15 @@ app.whenReady().then(() => {
     return
   }
 
-  // 如果只有1组，直接启动，不需要选组界面
   if (config.groups.length === 1) {
     createVNCWindows(config, config.groups[0].index)
   } else {
-    // 多组，显示选组界面
     showGroupSelector(config)
   }
 
-  app.on('activate', function () {
-    // macOS 专用，不需要处理
-  })
+  app.on('activate', function () {})
 })
 
-// 接收选组消息
 ipcMain.on('select-group', (event, groupIndex) => {
   const config = readConfig()
   createVNCWindows(config, groupIndex)
