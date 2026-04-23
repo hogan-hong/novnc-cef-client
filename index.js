@@ -200,7 +200,7 @@ function showGroupSelector (config) {
 // ========== 右下角退出按钮 ==========
 let exitWindow = null
 
-function createExitButton () {
+function createExitButton (parentWin) {
   const primaryDisplay = screen.getPrimaryDisplay()
   const workArea = primaryDisplay.workAreaSize
 
@@ -211,6 +211,7 @@ function createExitButton () {
     height: 30,
     frame: false,
     transparent: true,
+    parent: parentWin,       // ★ 挂到VNC窗口下，跟随虚拟桌面
     alwaysOnTop: false,
     skipTaskbar: true,
     resizable: false,
@@ -330,8 +331,8 @@ function createVNCWindows (config, groupIndex) {
     vncWindows.push(win)
   })
 
-  // ★ 创建右下角退出按钮
-  createExitButton()
+  // ★ 创建右下角退出按钮，挂到第一个VNC窗口下
+  createExitButton(vncWindows[0] || null)
 }
 
 // ========== 主流程 ==========
