@@ -2,27 +2,17 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-// ========== Windows API（koffi直接调用，不依赖PowerShell） ==========
+// ========== Windows API（koffi直接调用） ==========
 let user32 = null
-let dwmapi = null
 let FindWindowExW = null
 let SetWindowTextW = null
-let GetWindowLongW = null
-let SetWindowLongW = null
-let DwmSetWindowAttribute = null
 
 function loadWinAPI () {
   try {
     const koffi = require('koffi')
     user32 = koffi.load('user32.dll')
-    dwmapi = koffi.load('dwmapi.dll')
-
-    // 声明函数
     FindWindowExW = user32.func('FindWindowExW', 'pointer', ['pointer', 'pointer', 'string16', 'string16'])
     SetWindowTextW = user32.func('SetWindowTextW', 'bool', ['pointer', 'string16'])
-    GetWindowLongW = user32.func('GetWindowLongW', 'int32', ['pointer', 'int32'])
-    SetWindowLongW = user32.func('SetWindowLongW', 'int32', ['pointer', 'int32', 'int32'])
-    DwmSetWindowAttribute = dwmapi.func('DwmSetWindowAttribute', 'int32', ['pointer', 'int32', 'pointer', 'int32'])
     return true
   } catch (e) {
     console.error('Failed to load WinAPI:', e.message)
@@ -62,7 +52,6 @@ function readConfig () {
 
   if (!configPath) return null
 
-  // GBK编码读取
   const iconv = require('iconv-lite')
   const rawBuf = fs.readFileSync(configPath)
   const content = iconv.decode(rawBuf, 'gbk')
@@ -94,61 +83,33 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题 + 去除焦点过渡 ==========
-function customizeWindow (win, item, retryCount = 0) {
+// ========== 设置第二层窗口标题（Chrome Legacy Window） ==========
+function setLayer2Title (win, item, retryCount = 0) {
   if (!FindWindowExW) return
 
   try {
     const hwndBuf = win.getNativeWindowHandle()
-    // 构造指针
     const koffi = require('koffi')
     const hwnd = koffi.as(hwndBuf, 'pointer')
     if (!hwnd) return
 
-    // 1. 找到 Chrome Legacy Window 子窗口，设置标题为 "编号|控制IP"
-    const childClass = 'Chrome Legacy Window\u0000'
-    const child = FindWindowExW(hwnd, null, childClass, null)
+    // 查找 Chrome Legacy Window 子窗口
+    const child = FindWindowExW(hwnd, null, 'Chrome Legacy Window', null)
     if (!child) {
-      // 子窗口还没创建，重试
       if (retryCount < 10) {
-        setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
+        setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
       }
       return
     }
 
     const childTitle = `${item.index}|${item.controlIP}`
     SetWindowTextW(child, childTitle)
-
-    // 2. 去除焦点过渡效果
-    // DWMWA_NCRENDERING_POLICY = 2, DWMNCR_DISABLED = 2
-    // 禁用NC渲染可以去掉焦点切换时的灰色过渡
-    const policyVal = Buffer.alloc(4)
-    policyVal.writeInt32LE(2) // DWMNCR_DISABLED
-    DwmSetWindowAttribute(hwnd, 2, policyVal, 4)
-
-    // 3. 移除WS_THICKFRAME（0x00040000）避免调整大小边框带来的视觉间隙
-    const GWL_STYLE = -16
-    let style = GetWindowLongW(hwnd, GWL_STYLE)
-    style = style & ~0x00040000  // 去掉 WS_THICKFRAME
-    SetWindowLongW(hwnd, GWL_STYLE, style)
-
-    // 4. 设置窗口为不透明，禁用DWM的半透明过渡
-    // DWMWA_EXCLUDED_FROM_DWM_COMPOSITION = 12 (Windows 7+)
-    const excludeVal = Buffer.alloc(4)
-    excludeVal.writeInt32LE(1) // TRUE
-    DwmSetWindowAttribute(hwnd, 12, excludeVal, 4)
-
-    // 5. DWMWA_ALLOW_NCPAINT = 16, 设为1允许自己画NC区域
-    const ncPaintVal = Buffer.alloc(4)
-    ncPaintVal.writeInt32LE(1)
-    DwmSetWindowAttribute(hwnd, 16, ncPaintVal, 4)
-
-    console.log(`Window ${item.index} customized: layer2="${childTitle}"`)
+    console.log(`Window ${item.index}: layer2 title set to "${childTitle}"`)
 
   } catch (e) {
-    console.error(`customizeWindow error (window ${item.index}):`, e.message)
+    console.error(`setLayer2Title error (window ${item.index}):`, e.message)
     if (retryCount < 10) {
-      setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
+      setTimeout(() => setLayer2Title(win, item, retryCount + 1), 500)
     }
   }
 }
@@ -223,7 +184,7 @@ function createVNCWindows (config, groupIndex) {
   const winW = 853
   const winH = 480
 
-  // 5个窗口适配2K：3+2排列
+  // 5个窗口适配2K：3+2排列居中
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
   const totalWidth = cols * winW
@@ -265,11 +226,10 @@ function createVNCWindows (config, groupIndex) {
       win.setTitle(item.title)
     })
 
-    // ★ 页面加载后设置第二层标题 + 去除焦点过渡
+    // ★ 页面加载后设置第二层标题
     win.webContents.on('did-finish-load', () => {
-      // 延迟执行，确保Chrome Legacy Window子窗口已创建
       setTimeout(() => {
-        customizeWindow(win, item)
+        setLayer2Title(win, item)
       }, 500)
     })
 
@@ -287,11 +247,7 @@ function createVNCWindows (config, groupIndex) {
 
 // ========== 主流程 ==========
 app.whenReady().then(() => {
-  // 加载Windows API
-  const apiLoaded = loadWinAPI()
-  if (!apiLoaded) {
-    console.warn('WinAPI not available (non-Windows platform or koffi load failed)')
-  }
+  loadWinAPI()
 
   const config = readConfig()
 
