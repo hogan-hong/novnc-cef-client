@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { execFile } = require('child_process')
+const http = require('http')
 
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -66,14 +67,12 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题（写ps1文件执行，避免引号转义问题） ==========
+// ========== 设置第二层窗口标题（写ps1文件执行） ==========
 function setLayer2Title (win, item, retryCount = 0) {
   try {
     const hwndBuf = win.getNativeWindowHandle()
-    // 读取hwnd的16进制值
     let hwndHex
     if (hwndBuf.length === 8) {
-      // 8字节，可能是32位系统上对齐到8字节，实际有效值在低4字节
       const lo = hwndBuf.readUInt32LE(0)
       const hi = hwndBuf.readUInt32LE(4)
       if (hi === 0) {
@@ -87,7 +86,6 @@ function setLayer2Title (win, item, retryCount = 0) {
 
     const childTitle = `${item.index}|${item.controlIP}`
 
-    // 写临时ps1文件执行，避免命令行引号转义问题
     const psScript = `
 Add-Type -TypeDefinition @"
 using System;
@@ -106,8 +104,7 @@ $parent = [IntPtr]0x${hwndHex}
 $child = [Win32]::FindWindowEx($parent, [IntPtr]::Zero, "Chrome Legacy Window", $null)
 
 if ($child -eq [IntPtr]::Zero) {
-  # 子窗口可能还没创建，也尝试遍历子窗口查找
-  $child = [Win32]::GetWindow($parent, 5)  # GW_CHILD = 5
+  $child = [Win32]::GetWindow($parent, 5)
 }
 
 if ($child -ne [IntPtr]::Zero) {
@@ -122,7 +119,6 @@ if ($child -ne [IntPtr]::Zero) {
     fs.writeFileSync(tmpFile, psScript, 'utf-8')
 
     execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 8000 }, (err, stdout, stderr) => {
-      // 清理临时文件
       try { fs.unlinkSync(tmpFile) } catch (e) {}
 
       const output = (stdout || '').trim()
@@ -131,14 +127,12 @@ if ($child -ne [IntPtr]::Zero) {
       } else if (output === 'OK') {
         console.log(`Window ${item.index}: layer2 title set to "${childTitle}"`)
       } else {
-        console.log(`Window ${item.index}: ps1 output="${output}", stderr="${(stderr||'').trim()}"`)
         if (retryCount < 15) {
           setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
         }
       }
     })
   } catch (e) {
-    console.error(`setLayer2Title error (window ${item.index}):`, e.message)
     if (retryCount < 15) {
       setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
     }
@@ -211,7 +205,7 @@ function createExitButton (parentWin) {
     height: 30,
     frame: false,
     transparent: true,
-    parent: parentWin,       // ★ 挂到VNC窗口下，跟随虚拟桌面
+    parent: parentWin,
     alwaysOnTop: false,
     skipTaskbar: true,
     resizable: false,
@@ -253,9 +247,177 @@ function createExitButton (parentWin) {
   exitWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ========== 创建VNC窗口 ==========
+// ========== VNC窗口管理 ==========
 const vncWindows = []
 
+// ========== HTTP API 服务（接收易语言的控制指令） ==========
+let apiServer = null
+
+function startAPIServer (port = 9527) {
+  const server = http.createServer((req, res) => {
+    // 允许跨域
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200)
+      res.end()
+      return
+    }
+
+    // POST 请求处理控制指令
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', chunk => { body += chunk.toString() })
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body)
+          const result = handleControlCommand(data)
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ success: true, message: result }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ success: false, error: e.message }))
+        }
+      })
+      return
+    }
+
+    // GET 请求返回状态
+    if (req.method === 'GET' && req.url === '/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        success: true,
+        windowCount: vncWindows.length,
+        windows: vncWindows.map((w, i) => ({
+          index: i,
+          title: w.getTitle(),
+          visible: w.isVisible()
+        }))
+      }))
+      return
+    }
+
+    res.writeHead(404)
+    res.end('Not Found')
+  })
+
+  server.listen(port, '127.0.0.1', () => {
+    console.log(`NoVNC Control API running on http://127.0.0.1:${port}`)
+  })
+
+  apiServer = server
+}
+
+// ========== 处理控制指令，转发到lite.html ==========
+function handleControlCommand (data) {
+  // data 格式:
+  // { "action": "click", "windowIndex": 0, "x": 100, "y": 200 }
+  // { "action": "mousedown", "windowIndex": 0, "x": 100, "y": 200 }
+  // { "action": "mouseup", "windowIndex": 0, "x": 100, "y": 200 }
+  // { "action": "mousemove", "windowIndex": 0, "x": 100, "y": 200 }
+  // { "action": "keypress", "windowIndex": 0, "keysym": 65, "code": "KeyA", "down": true }
+  // { "action": "scroll", "windowIndex": 0, "x": 100, "y": 200, "deltaY": -120 }
+  // { "action": "clipboard", "windowIndex": 0, "text": "hello" }
+  // { "action": "clickAll", "x": 100, "y": 200 }  -- 所有窗口同时点击
+  // { "action": "keypressAll", "keysym": 65, "code": "KeyA", "down": true }  -- 所有窗口同时按键
+
+  const { action } = data
+
+  // ★ 群控操作：所有窗口同时执行
+  if (action === 'clickAll' || action === 'keypressAll' || action === 'scrollAll' || action === 'clipboardAll') {
+    let count = 0
+    vncWindows.forEach((win, i) => {
+      if (win && !win.isDestroyed()) {
+        sendToVNC(win, data)
+        count++
+      }
+    })
+    return `Sent to ${count} windows`
+  }
+
+  // ★ 单窗口操作
+  const windowIndex = data.windowIndex || 0
+  const win = vncWindows[windowIndex]
+
+  if (!win || win.isDestroyed()) {
+    throw new Error(`Window index ${windowIndex} not found or destroyed`)
+  }
+
+  sendToVNC(win, data)
+  return `Sent to window ${windowIndex}`
+}
+
+// ========== 发送控制消息到VNC窗口的lite.html ==========
+function sendToVNC (win, data) {
+  const { action, x, y, keysym, code, down, deltaY, deltaX, text, buttons } = data
+
+  let messageType = null
+  let messageData = {}
+
+  switch (action) {
+    case 'click':
+    case 'clickAll':
+      // 点击 = mousedown + mouseup
+      win.webContents.executeJavaScript(`
+        (function() {
+          var rfb = document.querySelector('#screen')?.__rfb || window.rfb;
+          if (rfb && rfb._sock) {
+            RFB.messages.pointerEvent(rfb._sock, ${x}, ${y}, 1);
+            RFB.messages.pointerEvent(rfb._sock, ${x}, ${y}, 0);
+          }
+        })()
+      `).catch(() => {})
+      return
+
+    case 'mousedown':
+    case 'mousedownAll':
+      messageType = 'sync-mouse-event'
+      messageData = { eventType: 'mousedown', x, y, buttons: buttons || 1 }
+      break
+
+    case 'mouseup':
+    case 'mouseupAll':
+      messageType = 'sync-mouse-event'
+      messageData = { eventType: 'mouseup', x, y, buttons: 0 }
+      break
+
+    case 'mousemove':
+    case 'mousemoveAll':
+      messageType = 'sync-mouse-event'
+      messageData = { eventType: 'mousemove', x, y, buttons: buttons || 0 }
+      break
+
+    case 'keypress':
+    case 'keypressAll':
+      messageType = 'sync-key-event'
+      messageData = { eventType: down ? 'keydown' : 'keyup', keysym, code }
+      break
+
+    case 'scroll':
+    case 'scrollAll':
+      messageType = 'sync-wheel-event'
+      messageData = { deltaY: deltaY || 0, deltaX: deltaX || 0, x, y }
+      break
+
+    case 'clipboard':
+    case 'clipboardAll':
+      messageType = 'sync-clipboard'
+      messageData = { text }
+      break
+
+    default:
+      throw new Error(`Unknown action: ${action}`)
+  }
+
+  // 通过 executeJavaScript 发送 postMessage 到lite.html
+  win.webContents.executeJavaScript(`
+    window.postMessage(${JSON.stringify({ type: messageType, ...messageData })}, '*')
+  `).catch(() => {})
+}
+
+// ========== 创建VNC窗口 ==========
 function createVNCWindows (config, groupIndex) {
   if (selectWindow) {
     selectWindow.close()
@@ -276,9 +438,8 @@ function createVNCWindows (config, groupIndex) {
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
   const totalWidth = cols * winW
-  const totalHeight = rows * winH
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
-  const offsetY = 0   // ★ 从屏幕最顶部开始排列
+  const offsetY = 0
 
   groupItems.forEach((item, i) => {
     const col = i % cols
@@ -293,7 +454,7 @@ function createVNCWindows (config, groupIndex) {
       height: winH,
       frame: false,
       transparent: true,
-      title: item.title,      // ★ 第一层标题 = 窗口标题
+      title: item.title,
       useContentSize: true,
       show: true,
       backgroundColor: '#000000',
@@ -309,27 +470,28 @@ function createVNCWindows (config, groupIndex) {
 
     win.setMenu(null)
 
-    // ★ 防止页面title变更覆盖第一层标题
     win.on('page-title-updated', (event) => {
       event.preventDefault()
       win.setTitle(item.title)
     })
 
-    // ★ 页面加载后设置第二层标题
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => {
         setLayer2Title(win, item)
       }, 500)
     })
 
-    // 加载URL
     win.loadURL(item.url)
 
     vncWindows.push(win)
   })
 
-  // ★ 创建右下角退出按钮，挂到第一个VNC窗口下
   createExitButton(vncWindows[0] || null)
+
+  // ★ 启动HTTP API服务
+  if (!apiServer) {
+    startAPIServer(9527)
+  }
 }
 
 // ========== 主流程 ==========
@@ -359,32 +521,31 @@ app.whenReady().then(() => {
   app.on('activate', function () {})
 })
 
-// 选组消息
 ipcMain.on('select-group', (event, groupIndex) => {
   const config = readConfig()
   createVNCWindows(config, groupIndex)
 })
 
-// ★ 退出程序：先关闭所有窗口，再退出
 ipcMain.on('exit-app', () => {
-  // 关闭所有VNC窗口
   vncWindows.forEach(w => {
     try { w.destroy() } catch (e) {}
   })
   vncWindows.length = 0
 
-  // 关闭退出按钮窗口
   if (exitWindow) {
     try { exitWindow.destroy() } catch (e) {}
     exitWindow = null
   }
 
-  // 强制退出
+  if (apiServer) {
+    apiServer.close()
+    apiServer = null
+  }
+
   app.quit()
   process.exit(0)
 })
 
-// 不自动退出，由退出按钮控制
 app.on('window-all-closed', function () {
-  // 不退出，退出按钮窗口还在
+  // 不自动退出，由退出按钮控制
 })
