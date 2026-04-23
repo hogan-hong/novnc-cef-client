@@ -4,28 +4,22 @@ const fs = require('fs')
 
 // ========== Windows API（koffi直接调用） ==========
 let user32 = null
-let dwmapi = null
 let FindWindowExW = null
 let SetWindowTextW = null
-let DwmExtendFrameIntoClientArea = null
+let SetWindowLongPtrW = null
+let GetWindowLongPtrW = null
 
 function loadWinAPI () {
   try {
     const koffi = require('koffi')
     user32 = koffi.load('user32.dll')
-    dwmapi = koffi.load('dwmapi.dll')
 
     FindWindowExW = user32.func('FindWindowExW', 'pointer', ['pointer', 'pointer', 'string16', 'string16'])
     SetWindowTextW = user32.func('SetWindowTextW', 'bool', ['pointer', 'string16'])
 
-    // MARGINS结构体: { left, right, top, bottom } 各4字节
-    const MARGINS = koffi.struct('MARGINS', {
-      left: 'int32',
-      right: 'int32',
-      top: 'int32',
-      bottom: 'int32'
-    })
-    DwmExtendFrameIntoClientArea = dwmapi.func('DwmExtendFrameIntoClientArea', 'int32', ['pointer', MARGINS])
+    // 设置窗口owner，同组窗口之间不画焦点过渡层
+    SetWindowLongPtrW = user32.func('SetWindowLongPtrW', 'pointer', ['pointer', 'int32', 'pointer'])
+    GetWindowLongPtrW = user32.func('GetWindowLongPtrW', 'pointer', ['pointer', 'int32'])
 
     return true
   } catch (e) {
@@ -97,42 +91,41 @@ function readConfig () {
   return config
 }
 
-// ========== 设置第二层窗口标题 + 消除焦点过渡层 ==========
-function customizeWindow (win, item, retryCount = 0) {
+// ========== 设置第二层窗口标题 + 设置同组owner ==========
+function customizeWindow (win, item, ownerHwnd, retryCount = 0) {
   if (!FindWindowExW) return
 
   try {
-    const hwndBuf = win.getNativeWindowHandle()
     const koffi = require('koffi')
+    const hwndBuf = win.getNativeWindowHandle()
     const hwnd = koffi.as(hwndBuf, 'pointer')
     if (!hwnd) return
 
-    // 1. 查找 Chrome Legacy Window 子窗口，设置标题为 "编号|控制IP"
+    // 1. 设置第二层标题
     const child = FindWindowExW(hwnd, null, 'Chrome Legacy Window', null)
     if (!child) {
       if (retryCount < 10) {
-        setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
+        setTimeout(() => customizeWindow(win, item, ownerHwnd, retryCount + 1), 500)
       }
       return
     }
 
     const childTitle = `${item.index}|${item.controlIP}`
     SetWindowTextW(child, childTitle)
-    console.log(`Window ${item.index}: layer2 title set to "${childTitle}"`)
+    console.log(`Window ${item.index}: layer2 title="${childTitle}"`)
 
-    // 2. 消除焦点切换时的灰色半透明过渡层
-    // DwmExtendFrameIntoClientArea 将frame扩展到整个客户区(-1,-1,-1,-1)
-    // 这样DWM认为整个窗口都是frame区域，不会再在边缘画额外的过渡层
-    if (DwmExtendFrameIntoClientArea) {
-      const margins = { left: -1, right: -1, top: -1, bottom: -1 }
-      const hr = DwmExtendFrameIntoClientArea(hwnd, margins)
-      console.log(`Window ${item.index}: DwmExtendFrameIntoClientArea result=${hr}`)
+    // 2. 设置owner：窗口2-5的owner设为窗口1
+    // 同owner的窗口之间切换焦点，Windows不会画灰色半透明过渡层
+    if (ownerHwnd && SetWindowLongPtrW) {
+      const GWLP_HWNDPARENT = -8
+      SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, ownerHwnd)
+      console.log(`Window ${item.index}: owner set`)
     }
 
   } catch (e) {
     console.error(`customizeWindow error (window ${item.index}):`, e.message)
     if (retryCount < 10) {
-      setTimeout(() => customizeWindow(win, item, retryCount + 1), 500)
+      setTimeout(() => customizeWindow(win, item, ownerHwnd, retryCount + 1), 500)
     }
   }
 }
@@ -207,13 +200,16 @@ function createVNCWindows (config, groupIndex) {
   const winW = 853
   const winH = 480
 
-  // 5个窗口适配2K：3+2排列居中
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
   const totalWidth = cols * winW
   const totalHeight = rows * winH
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
   const offsetY = Math.floor((workArea.height - totalHeight) / 2)
+
+  const koffi = require('koffi')
+  const windows = []
+  let ownerHwnd = null
 
   groupItems.forEach((item, i) => {
     const col = i % cols
@@ -249,10 +245,15 @@ function createVNCWindows (config, groupIndex) {
       win.setTitle(item.title)
     })
 
-    // ★ 页面加载后设置第二层标题
+    // ★ 获取第一个窗口的hwnd作为owner
+    if (i === 0) {
+      ownerHwnd = koffi.as(win.getNativeWindowHandle(), 'pointer')
+    }
+
+    // ★ 页面加载后设置第二层标题 + owner
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => {
-        customizeWindow(win, item)
+        customizeWindow(win, item, i === 0 ? null : ownerHwnd)
       }, 500)
     })
 
@@ -265,6 +266,8 @@ function createVNCWindows (config, groupIndex) {
         win.close()
       }
     })
+
+    windows.push(win)
   })
 }
 
