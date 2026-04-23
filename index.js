@@ -150,7 +150,6 @@ function createVNCWindows (config, groupIndex) {
   const offsetX = Math.floor((workArea.width - totalWidth) / 2)
   const offsetY = Math.floor((workArea.height - totalHeight) / 2)
 
-  let firstWin = null
   const windows = []
 
   groupItems.forEach((item, i) => {
@@ -166,7 +165,6 @@ function createVNCWindows (config, groupIndex) {
       height: winH,
       frame: false,
       title: item.title,      // ★ 第一层标题 = 窗口标题
-      parent: i === 0 ? null : firstWin,  // ★ 窗口2-5的parent设为窗口1，同组不画焦点过渡
       useContentSize: true,
       show: true,
       backgroundColor: '#000000',
@@ -181,11 +179,6 @@ function createVNCWindows (config, groupIndex) {
     })
 
     win.setMenu(null)
-
-    // ★ 记录第一个窗口
-    if (i === 0) {
-      firstWin = win
-    }
 
     // ★ 防止页面title变更覆盖第一层标题
     win.on('page-title-updated', (event, title) => {
