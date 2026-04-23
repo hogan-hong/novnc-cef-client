@@ -21,6 +21,13 @@ function createWindow () {
   // 加载指定的noVNC地址
   mainWindow.loadURL('http://neiwang.hogan.ltd/novnc/iPhone_853x480_run.html?token=01&IP=172.16.103.201')
 
+  // ESC键退出程序
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'Escape') {
+      app.quit()
+    }
+  })
+
   // 开启开发者工具（可选，调试用）
   // mainWindow.webContents.openDevTools()
 }
