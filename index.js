@@ -262,6 +262,38 @@ function refreshCanvasInfo (win, idx, retryCount = 0) {
   })
 }
 
+// ★ 刷新canvas缓存并等待结果（Promise版本，API调用前使用）
+function refreshCanvasInfoAsync (win, idx) {
+  return new Promise((resolve) => {
+    if (!win || win.isDestroyed()) { resolve(null); return }
+    win.webContents.executeJavaScript(`
+      (function() {
+        var s = document.getElementById('screen');
+        if (!s) return null;
+        var c = s.querySelector('canvas');
+        if (!c || c.width === 0 || c.height === 0) return null;
+        var rect = c.getBoundingClientRect();
+        return {
+          width: c.width,
+          height: c.height,
+          rectLeft: rect.left,
+          rectTop: rect.top,
+          rectWidth: rect.width,
+          rectHeight: rect.height,
+          scaleX: c.width / rect.width,
+          scaleY: c.height / rect.height
+        };
+      })()
+    `).then(info => {
+      if (info) {
+        canvasInfoCache[idx] = info
+        console.log(`refreshCanvasInfoAsync[${idx}]: scaleX=${info.scaleX.toFixed(2)} scaleY=${info.scaleY.toFixed(2)} canvasW=${info.width} canvasH=${info.height}`)
+      }
+      resolve(info)
+    }).catch(() => { resolve(null) })
+  })
+}
+
 // ========== VNC坐标 → 目标窗口viewport坐标 ==========
 function vncToViewport (vncX, vncY, targetIdx) {
   const info = canvasInfoCache[targetIdx]
@@ -272,15 +304,24 @@ function vncToViewport (vncX, vncY, targetIdx) {
   }
 }
 
-// ★★★ 同步核心逻辑 v7 — sendInputEvent + 主控切换 ★★★
+// ★★★ 固定横屏分辨率 ★★★
+// API坐标基于客户端分辨率 856×480
+// 实际手机分辨率 1334×750
+// API流程：越界检查(856×480) → 按比例转换到手机分辨率(1334×750) → vncToViewport → sendInputEvent
+const CLIENT_WIDTH = 856
+const CLIENT_HEIGHT = 480
+const PHONE_WIDTH = 1334
+const PHONE_HEIGHT = 750
+
+// ★★★ 同步核心逻辑 v7 — sendInputEvent + 主控切换 + 越界保护 ★★★
 //
 // 只有主控窗口 (masterWindowIndex) 的输入会同步到其他窗口
 // 其他窗口可以正常单独操作，不会影响别的窗口
+// ★ 越界保护：坐标超出 856×480 → 直接忽略，防止搞坏noVNC内部状态
 
 // ========== 同步：转发鼠标事件到其他窗口 ==========
 function forwardMouseEvent (sourceIdx, data) {
   if (!syncEnabled) return
-  // ★ 只转发主控窗口的事件
   if (sourceIdx !== masterWindowIndex) return
 
   const { eventType, x: vncX, y: vncY, button } = data
@@ -288,6 +329,10 @@ function forwardMouseEvent (sourceIdx, data) {
   vncWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
+
+    // ★ 越界检查：VNC坐标超出手机分辨率则忽略
+    if (vncX < 0 || vncX >= PHONE_WIDTH || vncY < 0 || vncY >= PHONE_HEIGHT) return
+
     const vp = vncToViewport(vncX, vncY, i)
     if (!vp) return
 
@@ -325,13 +370,19 @@ function forwardWheelEvent (sourceIdx, data) {
 
   vncWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
+    if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
+
+    // ★ 越界检查：VNC坐标超出手机分辨率则忽略
+    if (data.x < 0 || data.x >= PHONE_WIDTH || data.y < 0 || data.y >= PHONE_HEIGHT) return
+
     const vp = vncToViewport(data.x, data.y, i)
     if (!vp) return
+
     win.webContents.sendInputEvent({
       type: 'mouseWheel',
       x: vp.x, y: vp.y,
-      deltaX: -data.deltaX,   // 反转滚轮方向，匹配主控窗口
-      deltaY: -data.deltaY,   // 反转滚轮方向，匹配主控窗口
+      deltaX: -data.deltaX,
+      deltaY: -data.deltaY,
       canScroll: true
     })
   })
@@ -412,6 +463,56 @@ function startAPIServer (groupIndex) {
       return
     }
 
+    // ★ 诊断端点
+    if (req.method === 'GET' && req.url.startsWith('/diag')) {
+      const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
+      const diagIdx = parseInt(urlObj.searchParams.get('win') || '0')
+      const diagWin = vncWindows[diagIdx]
+      if (!diagWin || diagWin.isDestroyed()) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({error: 'window not found'}))
+        return
+      }
+      diagWin.webContents.executeJavaScript(`
+        (function() {
+          var s = document.getElementById('screen');
+          if (!s) return JSON.stringify({err:'NO_SCREEN'});
+          var c = s.querySelector('canvas');
+          if (!c) return JSON.stringify({err:'NO_CANVAS'});
+          var rect = c.getBoundingClientRect();
+          return JSON.stringify({
+            canvasW: c.width, canvasH: c.height,
+            rectLeft: rect.left, rectTop: rect.top, rectW: rect.width, rectH: rect.height,
+            scaleX: (c.width / rect.width).toFixed(2),
+            scaleY: (c.height / rect.height).toFixed(2)
+          });
+        })()
+      `).then(r => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(r)
+      }).catch(e => {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({error: e.message}))
+      })
+      return
+    }
+
+    // ★ 打开DevTools端点
+    if (req.method === 'GET' && req.url.startsWith('/devtools')) {
+      const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
+      const devIdx = parseInt(urlObj.searchParams.get('win') || '0')
+      const devWin = vncWindows[devIdx]
+      if (devWin && !devWin.isDestroyed()) {
+        devWin.webContents.openDevTools()
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        res.end('DevTools opened for window ' + devIdx)
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('Window not found')
+      }
+      return
+    }
+
     if (req.method === 'GET' && req.url === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({ success: true, windowCount: vncWindows.length, sync: syncEnabled, master: masterWindowIndex, port }))
@@ -438,12 +539,15 @@ function handleControlCommand (data) {
   return `Sent to window ${idx}`
 }
 
+// ★★★ sendToVNC: API控制 → VNC窗口 ★★★
+// 固定横屏分辨率 856×480，越界直接忽略
+// 不再每次刷新canvas，省性能
 function sendToVNC (winIdx, data) {
   const win = vncWindows[winIdx]
-  if (!win || win.isDestroyed()) { console.log(`sendToVNC: window ${winIdx} destroyed, skip`); return }
+  if (!win || win.isDestroyed()) return
   const { action, x, y, deltaY, deltaX, text, code, down } = data
-  console.log(`sendToVNC: winIdx=${winIdx} action=${action} x=${x} y=${y} cacheExists=${!!canvasInfoCache[winIdx]}`)
 
+  // 剪贴板走executeJavaScript
   if (action === 'clipboard' || action === 'clipboardAll') {
     win.webContents.executeJavaScript(`
       (function(){
@@ -454,88 +558,49 @@ function sendToVNC (winIdx, data) {
     return
   }
 
+  // 键盘走sendInputEvent
   if (action === 'keypress' || action === 'keypressAll') {
     const isDown = down !== false
     win.webContents.sendInputEvent({ type: isDown ? 'keyDown' : 'keyUp', keyCode: code || '', code: code || '' })
     return
   }
 
-  const actionStr = JSON.stringify(action)
-  const vncX = x || 0
-  const vncY = y || 0
+  // ★★★ 鼠标/滚动事件 ★★★
+  const apiX = x || 0
+  const apiY = y || 0
 
-  // ★★★ 最终方案: API控制直接复用同步控制的forwardMouseEvent逻辑 ★★★
-  // forwardMouseEvent在同步模式下是有效的，说明sendInputEvent+canvasInfoCache方案能工作
-  // API控制只需要: 不检查syncEnabled、不检查masterWindowIndex、精确控制目标窗口
-
-  // 确保canvas缓存就绪
-  if (!canvasInfoCache[winIdx]) {
-    refreshCanvasInfo(win, winIdx)
-    console.log('sendToVNC: window ' + winIdx + ' no cache, retrying...')
-    setTimeout(() => sendToVNC(winIdx, data), 500)
+  // ★ 越界检查：API坐标基于客户端 856×480
+  if (apiX < 0 || apiX >= CLIENT_WIDTH || apiY < 0 || apiY >= CLIENT_HEIGHT) {
+    console.log(`sendToVNC: win=${winIdx} 坐标越界 apiX=${apiX} apiY=${apiY} 限制=${CLIENT_WIDTH}×${CLIENT_HEIGHT} — 已忽略`)
     return
   }
 
-  const info = canvasInfoCache[winIdx]
-  const vx = Math.round(vncX / info.scaleX + info.rectLeft)
-  const vy = Math.round(vncY / info.scaleY + info.rectTop)
-  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + vncX + ' vncY=' + vncY + ' vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX.toFixed(2) + ' rectLeft=' + info.rectLeft)
+  // ★ 客户端坐标(856×480) → 手机实际分辨率(1334×750)
+  const vncX = Math.round(apiX * PHONE_WIDTH / CLIENT_WIDTH)
+  const vncY = Math.round(apiY * PHONE_HEIGHT / CLIENT_HEIGHT)
 
-  // ★★★ 同时试3种方式，看哪个有效 ★★★
+  // VNC坐标 → viewport坐标
+  if (!canvasInfoCache[winIdx]) refreshCanvasInfo(win, winIdx)
+  const vp = vncToViewport(vncX, vncY, winIdx)
+  if (!vp) return
 
-  // ★ 方式1: sendInputEvent — 和forwardMouseEvent完全一样的代码
+  console.log(`sendToVNC: win=${winIdx} action=${action} api(${apiX},${apiY}) → vnc(${vncX},${vncY}) → vp(${vp.x},${vp.y})`)
+
   if (action === 'click' || action === 'clickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
   } else if (action === 'rightclick' || action === 'rightclickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
   } else if (action === 'mousedown' || action === 'mousedownAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
   } else if (action === 'mouseup' || action === 'mouseupAll') {
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
   } else if (action === 'mousemove' || action === 'mousemoveAll') {
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: vp.x, y: vp.y })
   } else if (action === 'scroll' || action === 'scrollAll') {
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
   }
-
-  // ★ 方式2: postMessage给sync-mouse-event处理器
-  win.webContents.executeJavaScript(`
-    (function() {
-      var action = ${actionStr};
-      var vncX = ${vncX};
-      var vncY = ${vncY};
-      if (action === 'click' || action === 'clickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: vncX, y: vncY, buttons: 1 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: vncX, y: vncY, buttons: 0 }, '*');
-      } else if (action === 'rightclick' || action === 'rightclickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: vncX, y: vncY, buttons: 2 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: vncX, y: vncY, buttons: 0 }, '*');
-      } else if (action === 'scroll' || action === 'scrollAll') {
-        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: vncX, y: vncY }, '*');
-      }
-
-      // ★ 诊断: 检查全局RFB是否存在
-      var hasRFB = typeof RFB !== 'undefined';
-      var hasRFBMsg = false;
-      try { hasRFBMsg = !!(RFB && RFB.messages && RFB.messages.pointerEvent); } catch(e) {}
-      return 'postMessage sent hasRFB=' + hasRFB + ' hasRFBMsg=' + hasRFBMsg;
-    })()
-  `).then(r => {
-    console.log('sendToVNC postMessage: win=' + winIdx + ' ' + r)
-  }).catch(e => {
-    console.log('sendToVNC postMessage err: win=' + winIdx + ' ' + e.message)
-  })
-
-  // ★ 方式3: 异步检查postMessage是否到达 (200ms后检查)
-  setTimeout(() => {
-    win.webContents.executeJavaScript(`
-      (function() { return typeof window.__api_diag_result !== 'undefined' ? window.__api_diag_result : 'NO_DIAG'; })()
-    `).then(r => {
-      if (r !== 'NO_DIAG') console.log('postMessage async: win=' + winIdx + ' ' + r);
-    }).catch(() => {});
-  }, 200);
 }
 
 // ========== 创建VNC窗口 ==========
@@ -632,8 +697,7 @@ function createVNCWindows (config, groupIndex) {
             }, true);
           });
 
-          // 右键菜单拦截 — 只阻止浏览器右键菜单，不同步事件
-          // 右键的mousedown/mouseup已经被上面的事件监听捕获了，这里再发会导致右键重复
+          // 右键菜单拦截
           screen.addEventListener('contextmenu', function(e) {
             e.preventDefault();
             e.stopPropagation();
@@ -651,7 +715,7 @@ function createVNCWindows (config, groupIndex) {
             sendSync({ type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY });
           }, true);
 
-          console.log('[novnc-sync] capture v7 (sendInputEvent + master) injected, window=' + WIN_IDX);
+          console.log('[novnc-sync] capture v7 (sendInputEvent + master + bounds-check) injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
     })
@@ -679,15 +743,12 @@ ipcMain.on('select-group', (event, groupIndex) => { const config = readConfig();
 ipcMain.on('toggle-sync', (event, enabled) => {
   syncEnabled = enabled
   if (enabled) {
-    // ★ 不重置masterWindowIndex，保留上次用户选择的主控窗口
     vncWindows.forEach((w, i) => refreshCanvasInfo(w, i))
-    // ★ 同步开启时，注入/更新主控按钮（确保显示与实际一致）
     setTimeout(() => {
       injectMasterButtons()
       updateMasterButtons()
     }, 300)
   } else {
-    // ★ 同步关闭时，移除主控按钮
     removeMasterButtons()
   }
   console.log(`Sync ${enabled ? 'ON' : 'OFF'}, master=${masterWindowIndex}`)
