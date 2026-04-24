@@ -445,24 +445,15 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 用executeJavaScript实时获取canvas坐标，再用sendInputEvent发送可信事件
-  win.webContents.executeJavaScript(`
-    (function() {
-      var s = document.getElementById('screen');
-      if (!s) return null;
-      var c = s.querySelector('canvas');
-      if (!c || c.width === 0 || c.height === 0) return null;
-      var rect = c.getBoundingClientRect();
-      var scaleX = c.width / rect.width;
-      var scaleY = c.height / rect.height;
-      // VNC画面坐标 → 浏览器viewport坐标
-      var vx = Math.round((${x || 0}) / scaleX + rect.left);
-      var vy = Math.round((${y || 0}) / scaleY + rect.top);
-      return { vx: vx, vy: vy };
-    })()
-  `).then(result => {
-    if (!result) { console.log('sendToVNC: canvas not ready for window ' + winIdx); return }
-    const vx = result.vx, vy = result.vy
+  // ★ 回到同步方案: 先确保canvas缓存就绪，再sendInputEvent
+  let info = canvasInfoCache[winIdx]
+
+  if (!info) {
+    // 强制刷新缓存（同步等待不行，但可以先用简单估算）
+    // 如果没有缓存，先用简单的坐标估算，不丢弃事件
+    console.log('sendToVNC: window ' + winIdx + ' no canvas cache, using direct coordinates')
+    const vx = x || 0
+    const vy = y || 0
 
     if (action === 'click' || action === 'clickAll') {
       win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
@@ -479,7 +470,30 @@ function sendToVNC (winIdx, data) {
     } else if (action === 'scroll' || action === 'scrollAll') {
       win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
     }
-  }).catch(e => { console.log('sendToVNC error:', e.message) })
+    // 异步刷新缓存，下次调用就有缓存了
+    refreshCanvasInfo(win, winIdx)
+    return
+  }
+
+  const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
+  const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
+  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + (x||0) + ' vncY=' + (y||0) + ' vx=' + vx + ' vy=' + vy)
+
+  if (action === 'click' || action === 'clickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'rightclick' || action === 'rightclickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
+  } else if (action === 'mousedown' || action === 'mousedownAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mouseup' || action === 'mouseupAll') {
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mousemove' || action === 'mousemoveAll') {
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
+  } else if (action === 'scroll' || action === 'scrollAll') {
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
+  }
 }
 
 // ========== 创建VNC窗口 ==========
