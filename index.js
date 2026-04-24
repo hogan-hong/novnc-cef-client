@@ -513,7 +513,7 @@ function createVNCWindows (config, groupIndex) {
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false,
-        nodeIntegration: false, contextIsolation: true
+        nodeIntegration: true, contextIsolation: false
       }
     })
 
