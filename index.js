@@ -85,59 +85,92 @@ function createControlButtons (parentWin) {
   exitWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ★★★ 同步核心逻辑 ★★★
+// ★★★ 同步核心逻辑 v6 ★★★
 //
-// 之前4版同步都失败的根本原因：
-// 1. vnc_lite.html 所有同步代码都在 if(window.parent && window.parent!==window) 里
-//    Electron独立窗口中 window.parent === window，所以这些代码不执行
-//    包括 sync-mouse-event 的接收器也不执行
-// 2. rfb 是 ES module 的 let 变量，executeJavaScript 访问不到 window.rfb
+// 之前5版都失败的根本原因：
+// 1. vnc_lite.html 所有同步代码在 if(window.parent && window.parent!==window) 里
+//    Electron独立窗口中 window.parent === window，代码不执行
+// 2. rfb 是 ES module 的 let 变量，executeJavaScript 访问不到
 //
-// 正确方案：
-// - 发送端：在 #screen 上监听鼠标事件（#screen 在页面加载时就存在），通过 fetch 发到 /sync API
-// - 接收端：直接向 canvas dispatch MouseEvent/KeyboardEvent
-//   RFB 在 canvas 上注册了 mousedown/mouseup/mousemove 事件监听器
-//   dispatch MouseEvent 到 canvas → RFB._handleMouse 自动处理 → 发送 VNC 协议消息
-// - 键盘：Electron before-input-event 捕获，接收端 dispatch KeyboardEvent 到 canvas
+// v6 方案：
+// 1. 发送端：在 #screen 上监听事件（capture阶段），fetch → /sync API
+// 2. 接收端：通过 CDP 暴露 rfb 实例到 window.__rfb
+//    - 用 CDP Page.addScriptToEvaluateOnNewDocument 在页面加载前注入
+//    - 拦截 Element.prototype.appendChild
+//    - 当 RFB 构造函数调用 this._target.appendChild(this._screen) 时
+//      this 就是 RFB 实例，存到 window.__rfb
+// 3. 接收端用 RFB.messages.pointerEvent(rfb._sock, x, y, mask) 发送VNC协议
+//    和 vnc_lite.html 的 sync-mouse-event 接收器完全一致
 
+// ========== 注入 RFB 拦截器 ==========
+function injectRFBInterceptor (webContents) {
+  try {
+    if (!webContents.debugger.isAttached()) {
+      webContents.debugger.attach('1.3')
+    }
+    // 在新文档加载时自动注入脚本（在所有页面脚本之前执行）
+    webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
+      source: `
+        // ★ 拦截 RFB 构造：patch Element.prototype.appendChild
+        // RFB 构造函数中执行 this._target.appendChild(this._screen)
+        // 此时 this 就是 RFB 实例！
+        // 注意：_sock 在 appendChild 之后才创建，所以不能用 _sock 检测
+        // 改用 _screen + _canvas 检测（这两个在 appendChild 之前就创建了）
+        (function() {
+          var _origAppendChild = Element.prototype.appendChild;
+          Element.prototype.appendChild = function(child) {
+            var result = _origAppendChild.call(this, child);
+            // 检测 RFB 实例：
+            // this._screen 指向 child（就是刚添加的div）
+            // this._canvas 是 child 内的 canvas
+            if (this._screen === child && this._canvas && this._canvas.tagName === 'CANVAS') {
+              window.__rfb = this;
+              console.log('[novnc-sync] RFB instance captured via appendChild hook!');
+              // 恢复原始 appendChild，避免持续拦截
+              Element.prototype.appendChild = _origAppendChild;
+            }
+            return result;
+          };
+          console.log('[novnc-sync] RFB interceptor injected via CDP');
+        })();
+      `
+    })
+    // 分离 debugger（addScriptToEvaluateOnNewDocument 是持久化的，不需要保持连接）
+    // 但需要注意：detach 后注入的脚本仍然有效
+    webContents.debugger.detach()
+  } catch (e) {
+    console.error('[novnc-sync] CDP injection failed:', e.message)
+    // Fallback: 不注入拦截器，同步功能不可用但窗口正常工作
+  }
+}
+
+// ========== 同步：转发事件到其他窗口 ==========
 function forwardSyncEvent (sourceWinIndex, data) {
   if (!syncEnabled) return
   vncWindows.forEach((win, i) => {
     if (i === sourceWinIndex || !win || win.isDestroyed()) return
 
     if (data.type === 'sync-mouse') {
-      // ★ 接收端：向 canvas dispatch MouseEvent
-      // RFB._handleMouse 从 MouseEvent 的 clientX/clientY 提取坐标
-      // 我们需要把 VNC 设备坐标转回 CSS 坐标（clientX/clientY）
+      // ★ 用 window.__rfb + RFB.messages.pointerEvent 发送VNC协议消息
+      // 和 vnc_lite.html 的 sync-mouse-event 接收器完全一致
       const { eventType, x, y, buttons } = data
+      // JS MouseEvent.buttons → VNC button mask 映射
+      // JS: button 0=左(1), 1=中(4), 2=右(2)
+      // VNC: mask bit 0=左(1), bit 1=中(2), bit 2=右(4)
+      let vncMask = 0
+      if (buttons & 1) vncMask |= 1 << 0  // 左键: JS bit0 → VNC bit0
+      if (buttons & 4) vncMask |= 1 << 1  // 中键: JS bit2 → VNC bit1
+      if (buttons & 2) vncMask |= 1 << 2  // 右键: JS bit1 → VNC bit2
       win.webContents.executeJavaScript(`
         (function(){
-          var s=document.getElementById('screen');
-          if(!s)return;
-          var c=s.querySelector('canvas');
-          if(!c)return;
-          var r=c.getBoundingClientRect();
-          // VNC设备坐标 → CSS坐标：设备坐标 / scale = CSS偏移，加上 rect.left/top = clientX/clientY
-          var scaleX=c.width/r.width;
-          var scaleY=c.height/r.height;
-          var cx=r.left+${x}/scaleX;
-          var cy=r.top+${y}/scaleY;
-          var et='${eventType}';
-          // mousedown/mouseup 用 button 位掩码确定哪个键
-          // MouseEvent.button: 0=左键, 1=中键, 2=右键
-          var btn=0;
-          if(${buttons}&1)btn=0;
-          else if(${buttons}&2)btn=2;
-          else if(${buttons}&4)btn=1;
-          if(et==='mousedown'||et==='mouseup'||et==='mousemove'){
-            var me=new MouseEvent(et,{clientX:cx,clientY:cy,button:btn,buttons:${buttons},bubbles:true,cancelable:true});
-            c.dispatchEvent(me);
-          }
+          var rfb = window.__rfb;
+          if(!rfb || !rfb._sock) return;
+          var RFB = rfb.constructor;
+          RFB.messages.pointerEvent(rfb._sock, ${x}, ${y}, ${vncMask});
         })()
       `).catch(() => {})
     } else if (data.type === 'sync-key') {
       // ★ 键盘：dispatch KeyboardEvent 到 canvas
-      // RFB._keyboard 在 canvas 上监听 keydown/keyup
       win.webContents.executeJavaScript(`
         (function(){
           var s=document.getElementById('screen');
@@ -149,20 +182,22 @@ function forwardSyncEvent (sourceWinIndex, data) {
         })()
       `).catch(() => {})
     } else if (data.type === 'sync-wheel') {
-      // ★ 滚轮：dispatch WheelEvent 到 canvas
+      // ★ 滚轮：用 RFB.messages.pointerEvent 发送滚轮按钮
+      // 和 vnc_lite.html 的 sync-wheel-event 完全一致
+      const { deltaY, deltaX, x, y } = data
       win.webContents.executeJavaScript(`
         (function(){
-          var s=document.getElementById('screen');
-          if(!s)return;
-          var c=s.querySelector('canvas');
-          if(!c)return;
-          var r=c.getBoundingClientRect();
-          var scaleX=c.width/r.width;
-          var scaleY=c.height/r.height;
-          var cx=r.left+${data.x}/scaleX;
-          var cy=r.top+${data.y}/scaleY;
-          var we=new WheelEvent('wheel',{deltaY:${data.deltaY},deltaX:${data.deltaX},clientX:cx,clientY:cy,bubbles:true,cancelable:true});
-          c.dispatchEvent(we);
+          var rfb = window.__rfb;
+          if(!rfb || !rfb._sock) return;
+          var RFB = rfb.constructor;
+          // 和 vnc_lite.html 一致：反转方向
+          var dy = -(${deltaY});
+          var dx = -(${deltaX});
+          var x=${x}, y=${y};
+          if(dy < 0){ RFB.messages.pointerEvent(rfb._sock,x,y,1<<4); RFB.messages.pointerEvent(rfb._sock,x,y,0); }
+          else if(dy > 0){ RFB.messages.pointerEvent(rfb._sock,x,y,1<<3); RFB.messages.pointerEvent(rfb._sock,x,y,0); }
+          if(dx < 0){ RFB.messages.pointerEvent(rfb._sock,x,y,1<<5); RFB.messages.pointerEvent(rfb._sock,x,y,0); }
+          else if(dx > 0){ RFB.messages.pointerEvent(rfb._sock,x,y,1<<6); RFB.messages.pointerEvent(rfb._sock,x,y,0); }
         })()
       `).catch(() => {})
     }
@@ -181,7 +216,6 @@ function startAPIServer (groupIndex) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
 
-    // /sync 端点
     if (req.method === 'POST' && req.url === '/sync') {
       let body = ''
       req.on('data', chunk => { body += chunk.toString() })
@@ -200,7 +234,6 @@ function startAPIServer (groupIndex) {
       return
     }
 
-    // 外部API控制端点
     if (req.method === 'POST') {
       let body = ''
       req.on('data', chunk => { body += chunk.toString() })
@@ -242,61 +275,51 @@ function handleControlCommand (data) {
   return `Sent to window ${idx}`
 }
 
-// ★ 外部API控制也改用 dispatchEvent 方式（不再依赖 postMessage）
 function sendToVNC (win, data) {
   const { action, x, y, keysym, code, down, deltaY, deltaX, text, buttons } = data
 
   if (action === 'clipboard' || action === 'clipboardAll') {
-    // 剪贴板：需要 rfb.clipboardPasteFrom，但 rfb 不可访问
-    // 用 document.execCommand('insertText') 或 input 事件代替
-    // 实际上最简单的方式还是用 postMessage，因为 clipboard 不依赖那个 if 块
-    win.webContents.executeJavaScript(`(function(){try{var s=document.getElementById('screen');var rfb=s.__rfb;if(!rfb){var c=s.querySelector('canvas');if(c)rfb=c.__rfb}if(rfb&&rfb.clipboardPasteFrom)rfb.clipboardPasteFrom(${JSON.stringify(text || '')})}catch(e){}})()`).catch(() => {})
+    win.webContents.executeJavaScript(`(function(){var r=window.__rfb;if(r&&r.clipboardPasteFrom)r.clipboardPasteFrom(${JSON.stringify(text || '')})})()`).catch(() => {})
     return
   }
 
   if (action === 'keypress' || action === 'keypressAll') {
-    win.webContents.executeJavaScript(`
-      (function(){
-        var s=document.getElementById('screen');if(!s)return;
-        var c=s.querySelector('canvas');if(!c)return;
-        var ke=new KeyboardEvent('${down ? 'keydown' : 'keyup'}',{code:'${code || ''}',bubbles:true,cancelable:true});
-        c.dispatchEvent(ke);
-      })()
-    `).catch(() => {})
+    win.webContents.executeJavaScript(`(function(){var r=window.__rfb;if(r&&r.sendKey)r.sendKey(${keysym || 0},'${code || ''}',${down !== false})})()`).catch(() => {})
     return
   }
 
-  // 鼠标/滚轮：先做坐标缩放，然后 dispatchEvent
+  // 鼠标/滚轮：用 RFB.messages.pointerEvent
   win.webContents.executeJavaScript(`
     (function(){
+      var r=window.__rfb;
+      if(!r||!r._sock)return;
+      var RFB=r.constructor;
       var s=document.getElementById('screen');
-      if(!s)return;
-      var c=s.querySelector('canvas');
+      var c=s?s.querySelector('canvas'):null;
       if(!c)return;
-      var r=c.getBoundingClientRect();
-      var sx=c.width/r.width;
-      var sy=c.height/r.height;
-      var rx=${x || 0}; var ry=${y || 0};
-      var cx=r.left+rx/sx;
-      var cy=r.top+ry/sy;
+      var rect=c.getBoundingClientRect();
+      var sx=c.width/rect.width;
+      var sy=c.height/rect.height;
+      var rx=Math.round((${x || 0})*sx);
+      var ry=Math.round((${y || 0})*sy);
       var a='${action}';
       if(a==='click'||a==='clickAll'){
-        var me1=new MouseEvent('mousedown',{clientX:cx,clientY:cy,button:0,buttons:1,bubbles:true,cancelable:true});
-        c.dispatchEvent(me1);
-        var me2=new MouseEvent('mouseup',{clientX:cx,clientY:cy,button:0,buttons:0,bubbles:true,cancelable:true});
-        c.dispatchEvent(me2);
+        RFB.messages.pointerEvent(r._sock,rx,ry,1);
+        RFB.messages.pointerEvent(r._sock,rx,ry,0);
       }else if(a==='mousedown'||a==='mousedownAll'){
-        var me=new MouseEvent('mousedown',{clientX:cx,clientY:cy,button:0,buttons:1,bubbles:true,cancelable:true});
-        c.dispatchEvent(me);
+        RFB.messages.pointerEvent(r._sock,rx,ry,1);
       }else if(a==='mouseup'||a==='mouseupAll'){
-        var me=new MouseEvent('mouseup',{clientX:cx,clientY:cy,button:0,buttons:0,bubbles:true,cancelable:true});
-        c.dispatchEvent(me);
+        RFB.messages.pointerEvent(r._sock,rx,ry,0);
       }else if(a==='mousemove'||a==='mousemoveAll'){
-        var me=new MouseEvent('mousemove',{clientX:cx,clientY:cy,buttons:${buttons || 0},bubbles:true,cancelable:true});
-        c.dispatchEvent(me);
+        var mask=${buttons || 0};
+        var vm=0;if(mask&1)vm|=1;if(mask&4)vm|=2;if(mask&2)vm|=4;
+        RFB.messages.pointerEvent(r._sock,rx,ry,vm);
       }else if(a==='scroll'||a==='scrollAll'){
-        var we=new WheelEvent('wheel',{deltaY:${deltaY || 0},deltaX:${deltaX || 0},clientX:cx,clientY:cy,bubbles:true,cancelable:true});
-        c.dispatchEvent(we);
+        var dy=-(${deltaY || 0}),dx=-(${deltaX || 0});
+        if(dy<0){RFB.messages.pointerEvent(r._sock,rx,ry,1<<4);RFB.messages.pointerEvent(r._sock,rx,ry,0);}
+        else if(dy>0){RFB.messages.pointerEvent(r._sock,rx,ry,1<<3);RFB.messages.pointerEvent(r._sock,rx,ry,0);}
+        if(dx<0){RFB.messages.pointerEvent(r._sock,rx,ry,1<<5);RFB.messages.pointerEvent(r._sock,rx,ry,0);}
+        else if(dx>0){RFB.messages.pointerEvent(r._sock,rx,ry,1<<6);RFB.messages.pointerEvent(r._sock,rx,ry,0);}
       }
     })()
   `).catch(() => {})
@@ -334,6 +357,10 @@ function createVNCWindows (config, groupIndex) {
     win.setMenu(null)
     win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
 
+    // ★★★ 关键：在页面加载前注入 RFB 拦截器 ★★★
+    // 必须在 loadURL 之前注入，否则 module 脚本可能已经执行了
+    injectRFBInterceptor(win.webContents)
+
     // ★ 键盘同步：Electron原生 before-input-event
     win.webContents.on('before-input-event', (event, input) => {
       if (!syncEnabled) return
@@ -354,12 +381,11 @@ function createVNCWindows (config, groupIndex) {
       setTimeout(() => setLayer2Title(win, item), 500)
 
       // ★★★ 同步事件捕获注入 ★★★
-      // 在 #screen 上监听鼠标事件（冒泡到 #screen），通过 fetch 发到 /sync API
-      // #screen 在页面加载时就存在（是 RFB 构造函数的 target），canvas 是它的子元素
+      // 在 #screen 上监听鼠标事件，通过 fetch 发到 /sync API
       win.webContents.executeJavaScript(`
         (function() {
           var screen = document.getElementById('screen');
-          if (!screen) { console.error('[sync] #screen not found, retrying...'); return; }
+          if (!screen) return;
           var API_URL = 'http://127.0.0.1:${apiPort}/sync';
           var WIN_IDX = ${i};
 
@@ -374,8 +400,8 @@ function createVNCWindows (config, groupIndex) {
             } catch(e) {}
           }
 
-          // 鼠标事件：监听 #screen（canvas是它的子元素，事件冒泡上来）
-          // 使用 capture=true 确保在 RFB 处理之前捕获
+          // 鼠标事件：在 capture 阶段监听 #screen
+          // 不 stopPropagation，让 RFB 也能正常处理事件
           ['mousedown', 'mouseup', 'mousemove', 'contextmenu'].forEach(function(et) {
             screen.addEventListener(et, function(e) {
               var canvas = screen.querySelector('canvas');
@@ -402,7 +428,7 @@ function createVNCWindows (config, groupIndex) {
             sendSync({ type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY });
           }, true);
 
-          console.log('[novnc-sync] capture injected OK, window=' + WIN_IDX + ' api=' + API_URL);
+          console.log('[novnc-sync] capture v6 injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
     })
