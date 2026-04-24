@@ -66,22 +66,65 @@ function readConfig () {
   }
 }
 
-// ========== 设置第二层窗口标题 ==========
-function setLayer2Title (win, item, retryCount = 0) {
-  try {
-    const hwndBuf = win.getNativeWindowHandle()
-    let hwndHex
-    if (hwndBuf.length === 8) { const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4); hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase() }
-    else { hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase() }
-    const childTitle = `${item.index}|${item.controlIP}`
-    const psScript = `Add-Type -TypeDefinition @"\nusing System;using System.Runtime.InteropServices;\npublic class W{[DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string n,string t);\n[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool SetWindowText(IntPtr h,string s);\n[DllImport("user32.dll")]public static extern IntPtr GetWindow(IntPtr h,uint c);}\n"@\n$p=[IntPtr]0x${hwndHex};$c=[W]::FindWindowEx($p,[IntPtr]::Zero,"Chrome Legacy Window",$null)\nif($c -eq [IntPtr]::Zero){$c=[W]::GetWindow($p,5)}\nif($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,"${childTitle}");Write-Host "OK"}else{Write-Host "RETRY"}\n`
-    const tmpFile = path.join(app.getPath('temp'), `novnc_title_${item.index}.ps1`)
-    fs.writeFileSync(tmpFile, psScript, 'utf-8')
-    execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 8000 }, (err, stdout) => {
-      try { fs.unlinkSync(tmpFile) } catch (e) {}
-      if ((stdout || '').trim() === 'RETRY' && retryCount < 15) setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600)
+// ========== 批量设置第二层窗口标题 ==========
+// 用队列统一处理，避免15个窗口同时起PowerShell进程互相打架
+const _titleQueue = []
+let _titleProcessing = false
+const CSHARP_HELPER = `
+using System;using System.Runtime.InteropServices;
+public class W{
+  [DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string n,string t);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool SetWindowText(IntPtr h,string s);
+  [DllImport("user32.dll")]public static extern IntPtr GetWindow(IntPtr h,uint c);
+}`
+
+function queueLayer2Title (win, item) {
+  if (!win || win.isDestroyed()) return
+  const hwndBuf = win.getNativeWindowHandle()
+  let hwndHex
+  if (hwndBuf.length === 8) {
+    const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+    hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
+  } else {
+    hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
+  }
+  _titleQueue.push({ hwndHex, title: `${item.index}|${item.controlIP}`, win, item })
+  if (!_titleProcessing) processTitleQueue()
+}
+
+function processTitleQueue () {
+  if (_titleQueue.length === 0) { _titleProcessing = false; return }
+  _titleProcessing = true
+
+  // 每批最多5个窗口，避免一次起太多
+  const batch = _titleQueue.splice(0, 5)
+  // Add-Type只编译一次，所有窗口共享
+  const psLines = [`Add-Type -TypeDefinition '${CSHARP_HELPER}'`]
+  batch.forEach(({ hwndHex, title }) => {
+    psLines.push(`$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome Legacy Window',$null);if($c -eq [IntPtr]::Zero){$c=[W]::GetWindow([IntPtr]0x${hwndHex},5)};if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${title}');Write-Host 'OK_${hwndHex}'}else{Write-Host 'RETRY_${hwndHex}'}`)
+  })
+  const psScript = psLines.join('\n')
+  const tmpFile = path.join(app.getPath('temp'), 'novnc_title_batch.ps1')
+
+  try { fs.writeFileSync(tmpFile, psScript, 'utf-8') } catch (e) { _titleProcessing = false; return }
+
+  execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 15000 }, (err, stdout) => {
+    try { fs.unlinkSync(tmpFile) } catch (e) {}
+    const output = (stdout || '').trim()
+    // 检查失败的，延迟后重新加入队列
+    batch.forEach(({ hwndHex, title, win, item }) => {
+      if (win.isDestroyed()) return
+      if (!output.includes(`OK_${hwndHex}`)) {
+        setTimeout(() => queueLayer2Title(win, item), 1000)
+      }
     })
-  } catch (e) { if (retryCount < 15) setTimeout(() => setLayer2Title(win, item, retryCount + 1), 600) }
+    // 处理下一批
+    setTimeout(() => processTitleQueue(), 300)
+  })
+}
+
+function setLayer2Title (win, item) {
+  queueLayer2Title(win, item)
 }
 
 // ========== 选组界面 ==========
