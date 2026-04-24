@@ -460,57 +460,38 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 通过preload劫持的WebSocket直接发送VNC协议指针事件
-  // 绕过RFB实例和sendInputEvent，直接往VNC WebSocket发二进制数据
-  win.webContents.executeJavaScript(`
-    (function() {
-      var action = ${JSON.stringify(action)};
-      var x = ${x || 0};
-      var y = ${y || 0};
+  // ★ 用sendInputEvent发送可信事件 + canvasInfoCache做坐标转换
+  // 之前窗口0能用说明这个方案有效，关键是确保所有窗口缓存就绪
+  let info = canvasInfoCache[winIdx]
 
-      if (!window.__vncSockets || window.__vncSockets.length === 0) {
-        console.log('[API] ERROR: no VNC WebSocket captured');
-        return 'NO_VNC_SOCK';
-      }
+  if (!info) {
+    // 缓存还没就绪，触发刷新后重试
+    refreshCanvasInfo(win, winIdx)
+    console.log('sendToVNC: window ' + winIdx + ' no cache, retrying...')
+    setTimeout(() => sendToVNC(winIdx, data), 500)
+    return
+  }
 
-      // 用第一个(通常也是唯一一个)VNC WebSocket
-      var sockIdx = 0;
-      var sendPtr = window.__sendVNCPointer;
-      if (!sendPtr) {
-        console.log('[API] ERROR: __sendVNCPointer not found');
-        return 'NO_SEND_PTR';
-      }
+  // VNC画面坐标 → 窗口viewport坐标
+  const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
+  const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
+  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + (x||0) + ' vncY=' + (y||0) + ' vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX.toFixed(2))
 
-      var result;
-      if (action === 'click' || action === 'clickAll') {
-        sendPtr(sockIdx, x, y, 1 << 0); // left down
-        sendPtr(sockIdx, x, y, 0);       // all up
-        result = 'OK';
-      } else if (action === 'rightclick' || action === 'rightclickAll') {
-        sendPtr(sockIdx, x, y, 1 << 2); // right down
-        sendPtr(sockIdx, x, y, 0);       // all up
-        result = 'OK';
-      } else if (action === 'mousedown' || action === 'mousedownAll') {
-        result = sendPtr(sockIdx, x, y, 1 << 0);
-      } else if (action === 'mouseup' || action === 'mouseupAll') {
-        result = sendPtr(sockIdx, x, y, 0);
-      } else if (action === 'mousemove' || action === 'mousemoveAll') {
-        result = sendPtr(sockIdx, x, y, 0);
-      } else if (action === 'scroll' || action === 'scrollAll') {
-        var dy = ${deltaY || 0};
-        if (dy < 0) {
-          sendPtr(sockIdx, x, y, 1 << 3); sendPtr(sockIdx, x, y, 0);
-        } else if (dy > 0) {
-          sendPtr(sockIdx, x, y, 1 << 4); sendPtr(sockIdx, x, y, 0);
-        }
-        result = 'OK';
-      }
-      console.log('[API] sendVNCPointer action=' + action + ' x=' + x + ' y=' + y + ' result=' + result + ' sockCount=' + window.__vncSockets.length);
-      return result || 'UNKNOWN_ACTION';
-    })()
-  `).then(result => {
-    console.log('sendToVNC result: win=' + winIdx + ' ' + result)
-  }).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
+  if (action === 'click' || action === 'clickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'rightclick' || action === 'rightclickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
+  } else if (action === 'mousedown' || action === 'mousedownAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mouseup' || action === 'mouseupAll') {
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mousemove' || action === 'mousemoveAll') {
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
+  } else if (action === 'scroll' || action === 'scrollAll') {
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
+  }
 }
 
 // ========== 创建VNC窗口 ==========
@@ -538,8 +519,7 @@ function createVNCWindows (config, groupIndex) {
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false,
-        nodeIntegration: true, contextIsolation: false,
-        preload: path.join(__dirname, 'preload.js')
+        nodeIntegration: false, contextIsolation: true
       }
     })
 
