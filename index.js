@@ -437,7 +437,13 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  if (!info) { refreshCanvasInfo(win, winIdx); return }
+  if (!info) {
+    // canvas信息还没缓存，尝试刷新后重试，不要直接丢掉
+    console.log(`sendToVNC: window ${winIdx} canvas info missing, refreshing and retrying...`)
+    refreshCanvasInfo(win, winIdx)
+    setTimeout(() => sendToVNC(winIdx, data), 1500)
+    return
+  }
   const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
   const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
 
