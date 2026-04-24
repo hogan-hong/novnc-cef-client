@@ -460,74 +460,82 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★★★ API控制: 同时用两种方式发送，诊断哪个有效 ★★★
-  // 方式1: window.postMessage → vnc_lite.html的sync-mouse-event处理器
-  // 方式2: sendInputEvent + 实时canvas坐标(从executeJavaScript获取)
   const actionStr = JSON.stringify(action)
   const vncX = x || 0
   const vncY = y || 0
 
-  // 先获取实时canvas坐标，然后双发
+  // ★★★ 最终方案: API控制直接复用同步控制的forwardMouseEvent逻辑 ★★★
+  // forwardMouseEvent在同步模式下是有效的，说明sendInputEvent+canvasInfoCache方案能工作
+  // API控制只需要: 不检查syncEnabled、不检查masterWindowIndex、精确控制目标窗口
+
+  // 确保canvas缓存就绪
+  if (!canvasInfoCache[winIdx]) {
+    refreshCanvasInfo(win, winIdx)
+    console.log('sendToVNC: window ' + winIdx + ' no cache, retrying...')
+    setTimeout(() => sendToVNC(winIdx, data), 500)
+    return
+  }
+
+  const info = canvasInfoCache[winIdx]
+  const vx = Math.round(vncX / info.scaleX + info.rectLeft)
+  const vy = Math.round(vncY / info.scaleY + info.rectTop)
+  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + vncX + ' vncY=' + vncY + ' vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX.toFixed(2) + ' rectLeft=' + info.rectLeft)
+
+  // ★★★ 同时试3种方式，看哪个有效 ★★★
+
+  // ★ 方式1: sendInputEvent — 和forwardMouseEvent完全一样的代码
+  if (action === 'click' || action === 'clickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'rightclick' || action === 'rightclickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
+  } else if (action === 'mousedown' || action === 'mousedownAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mouseup' || action === 'mouseupAll') {
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
+  } else if (action === 'mousemove' || action === 'mousemoveAll') {
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
+  } else if (action === 'scroll' || action === 'scrollAll') {
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
+  }
+
+  // ★ 方式2: postMessage给sync-mouse-event处理器
   win.webContents.executeJavaScript(`
     (function() {
-      var s = document.getElementById('screen');
-      if (!s) return JSON.stringify({err:'NO_SCREEN'});
-      var c = s.querySelector('canvas');
-      if (!c || c.width === 0 || c.height === 0) return JSON.stringify({err:'NO_CANVAS'});
-      var rect = c.getBoundingClientRect();
-      var scaleX = c.width / rect.width;
-      var scaleY = c.height / rect.height;
-      var vx = Math.round(${vncX} / scaleX + rect.left);
-      var vy = Math.round(${vncY} / scaleY + rect.top);
-
-      // ★ 方式1: postMessage给sync-mouse-event处理器
       var action = ${actionStr};
+      var vncX = ${vncX};
+      var vncY = ${vncY};
       if (action === 'click' || action === 'clickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 1 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: vncX, y: vncY, buttons: 1 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: vncX, y: vncY, buttons: 0 }, '*');
       } else if (action === 'rightclick' || action === 'rightclickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 2 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
-      } else if (action === 'mousedown' || action === 'mousedownAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 1 }, '*');
-      } else if (action === 'mouseup' || action === 'mouseupAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
-      } else if (action === 'mousemove' || action === 'mousemoveAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousemove', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: vncX, y: vncY, buttons: 2 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: vncX, y: vncY, buttons: 0 }, '*');
       } else if (action === 'scroll' || action === 'scrollAll') {
-        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: ${vncX}, y: ${vncY} }, '*');
+        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: vncX, y: vncY }, '*');
       }
 
-      return JSON.stringify({vx:vx, vy:vy, scaleX:scaleX.toFixed(2)});
+      // ★ 诊断: 检查全局RFB是否存在
+      var hasRFB = typeof RFB !== 'undefined';
+      var hasRFBMsg = false;
+      try { hasRFBMsg = !!(RFB && RFB.messages && RFB.messages.pointerEvent); } catch(e) {}
+      return 'postMessage sent hasRFB=' + hasRFB + ' hasRFBMsg=' + hasRFBMsg;
     })()
-  `).then(result => {
-    // ★ 方式2: 用获取到的实时坐标发sendInputEvent
-    try {
-      var info = JSON.parse(result);
-      if (info.err) { console.log('sendToVNC canvas err: win=' + winIdx + ' ' + info.err); return; }
-      var vx = info.vx, vy = info.vy;
+  `).then(r => {
+    console.log('sendToVNC postMessage: win=' + winIdx + ' ' + r)
+  }).catch(e => {
+    console.log('sendToVNC postMessage err: win=' + winIdx + ' ' + e.message)
+  })
 
-      // 先focus窗口 + 发mouseMove让Chromium hit-test正确
-      if (win.isMinimized && win.isMinimized()) win.restore();
-      win.moveTop();
-      win.focus();
-
-      if (action === 'click' || action === 'clickAll') {
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy });
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 });
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 });
-      } else if (action === 'rightclick' || action === 'rightclickAll') {
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy });
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 });
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 });
-      } else if (action === 'scroll' || action === 'scrollAll') {
-        win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true });
-      }
-      console.log('sendToVNC dual: win=' + winIdx + ' postMessage+sendInput vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX);
-    } catch(e) {
-      console.log('sendToVNC parse err: win=' + winIdx + ' ' + e.message + ' raw=' + result);
-    }
-  }).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
+  // ★ 方式3: 异步检查postMessage是否到达 (200ms后检查)
+  setTimeout(() => {
+    win.webContents.executeJavaScript(`
+      (function() { return typeof window.__api_diag_result !== 'undefined' ? window.__api_diag_result : 'NO_DIAG'; })()
+    `).then(r => {
+      if (r !== 'NO_DIAG') console.log('postMessage async: win=' + winIdx + ' ' + r);
+    }).catch(() => {});
+  }, 200);
 }
 
 // ========== 创建VNC窗口 ==========
