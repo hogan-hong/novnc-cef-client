@@ -460,55 +460,32 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 回到同步方案: 先确保canvas缓存就绪，再sendInputEvent
-  let info = canvasInfoCache[winIdx]
+  // ★ 直接通过RFB.messages.pointerEvent发送VNC协议级别事件
+  // 绕过sendInputEvent（对非焦点窗口可能无效）
+  // 复用vnc_lite.html已有的postMessage接口
+  win.webContents.executeJavaScript(`
+    (function() {
+      var action = ${JSON.stringify(action)};
+      var x = ${x || 0};
+      var y = ${y || 0};
 
-  if (!info) {
-    // 强制刷新缓存（同步等待不行，但可以先用简单估算）
-    // 如果没有缓存，先用简单的坐标估算，不丢弃事件
-    console.log('sendToVNC: window ' + winIdx + ' no canvas cache, using direct coordinates')
-    const vx = x || 0
-    const vy = y || 0
-
-    if (action === 'click' || action === 'clickAll') {
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-    } else if (action === 'rightclick' || action === 'rightclickAll') {
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
-    } else if (action === 'mousedown' || action === 'mousedownAll') {
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-    } else if (action === 'mouseup' || action === 'mouseupAll') {
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-    } else if (action === 'mousemove' || action === 'mousemoveAll') {
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
-    } else if (action === 'scroll' || action === 'scrollAll') {
-      win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
-    }
-    // 异步刷新缓存，下次调用就有缓存了
-    refreshCanvasInfo(win, winIdx)
-    return
-  }
-
-  const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
-  const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
-  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + (x||0) + ' vncY=' + (y||0) + ' vx=' + vx + ' vy=' + vy)
-
-  if (action === 'click' || action === 'clickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'rightclick' || action === 'rightclickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
-  } else if (action === 'mousedown' || action === 'mousedownAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mouseup' || action === 'mouseupAll') {
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mousemove' || action === 'mousemoveAll') {
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
-  } else if (action === 'scroll' || action === 'scrollAll') {
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
-  }
+      if (action === 'click' || action === 'clickAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 1 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
+      } else if (action === 'rightclick' || action === 'rightclickAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 2 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
+      } else if (action === 'mousedown' || action === 'mousedownAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 1 }, '*');
+      } else if (action === 'mouseup' || action === 'mouseupAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
+      } else if (action === 'mousemove' || action === 'mousemoveAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousemove', x: x, y: y, buttons: 0 }, '*');
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: x, y: y }, '*');
+      }
+    })()
+  `).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
 }
 
 // ========== 创建VNC窗口 ==========
