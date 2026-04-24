@@ -7,13 +7,9 @@ const http = require('http')
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
 app.commandLine.appendSwitch('no-sandbox')
-
-// ========== GPU 加速 ==========
 app.commandLine.appendSwitch('enable-gpu')
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
-
-// ========== 禁用后台节流 ==========
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
@@ -25,24 +21,17 @@ function readConfig () {
     path.join(process.cwd(), '配置文件.int'),
     path.join(app.getAppPath(), '配置文件.int')
   ]
-
   let configPath = null
-  for (const p of searchPaths) {
-    if (fs.existsSync(p)) { configPath = p; break }
-  }
+  for (const p of searchPaths) { if (fs.existsSync(p)) { configPath = p; break } }
   if (!configPath) return null
-
   const iconv = require('iconv-lite')
   const rawBuf = fs.readFileSync(configPath)
   const content = iconv.decode(rawBuf, 'gbk')
-
   const config = { groups: [], items: [] }
-
   for (let i = 1; i <= 10; i++) {
     const match = content.match(new RegExp(`组${i}名称=(.+)`, 'm'))
     if (match && match[1].trim()) config.groups.push({ index: i, name: match[1].trim() })
   }
-
   for (let i = 1; i <= 100; i++) {
     const urlMatch = content.match(new RegExp(`URL${i}=(.+)`, 'm'))
     const titleMatch = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
@@ -106,7 +95,7 @@ function showGroupSelector (config) {
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ========== 右下角按钮（同步+退出） ==========
+// ========== 右下角按钮 ==========
 let exitWindow = null
 let syncEnabled = false
 
@@ -121,6 +110,8 @@ function createControlButtons (parentWin) {
 
 // ========== VNC窗口管理 ==========
 const vncWindows = []
+// ★ 同步事件信号前缀，主进程通过console-message捕获
+const SYNC_PREFIX = '__NOVNC_SYNC__:'
 
 // ========== 同步：转发事件到其他窗口 ==========
 function forwardSyncEvent (sourceWinIndex, data) {
@@ -130,7 +121,7 @@ function forwardSyncEvent (sourceWinIndex, data) {
     if (data.type === 'sync-mouse') {
       win.webContents.executeJavaScript(`window.postMessage({type:'sync-mouse-event',eventType:'${data.eventType}',x:${data.x},y:${data.y},buttons:${data.buttons}},'*')`).catch(() => {})
     } else if (data.type === 'sync-key') {
-      win.webContents.executeJavaScript(`(function(){try{var rfb=window.rfb||document.getElementById('screen').__rfb;if(rfb)rfb.sendKey(${data.keyCode},'${data.code}',${data.eventType === 'keydown'})}catch(e){}})()`).catch(() => {})
+      win.webContents.executeJavaScript(`(function(){try{var rfb=window.rfb;if(!rfb)try{rfb=document.getElementById('screen').__rfb}catch(e){};if(rfb)rfb.sendKey(${data.keyCode},'${data.code}',${data.eventType === 'keydown'})}catch(e){}})()`).catch(() => {})
     } else if (data.type === 'sync-wheel') {
       win.webContents.executeJavaScript(`window.postMessage({type:'sync-wheel-event',deltaY:${data.deltaY},deltaX:${data.deltaX},x:${data.x},y:${data.y}},'*')`).catch(() => {})
     }
@@ -228,6 +219,7 @@ function createVNCWindows (config, groupIndex) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
 
+    // ★ VNC窗口：不需要nodeIntegration，安全且兼容远程URL
     const win = new BrowserWindow({
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
@@ -235,20 +227,18 @@ function createVNCWindows (config, groupIndex) {
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false,
-        nodeIntegration: true,     // ★ 需要ipcRenderer给同步事件上报
-        contextIsolation: false    // ★ 让注入脚本能访问ipcRenderer
+        nodeIntegration: false, contextIsolation: true
       }
     })
 
     win.setMenu(null)
 
-    // ★ 第一层标题保持
     win.on('page-title-updated', (event) => {
       event.preventDefault()
       win.setTitle(item.title)
     })
 
-    // ★ 键盘同步：用Electron原生 before-input-event 捕获（最可靠）
+    // ★ 键盘同步：用Electron原生 before-input-event（最可靠，不依赖页面注入）
     win.webContents.on('before-input-event', (event, input) => {
       if (!syncEnabled) return
       if (input.type === 'keyDown' || input.type === 'keyUp') {
@@ -264,15 +254,16 @@ function createVNCWindows (config, groupIndex) {
       }
     })
 
+    // ★ 鼠标同步：注入脚本通过console.log发信号，主进程通过console-message接收
+    // 这种方式不依赖nodeIntegration，对远程URL最可靠
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => setLayer2Title(win, item), 500)
 
-      // ★ 鼠标同步：注入事件捕获脚本，通过ipcRenderer上报给主进程
       win.webContents.executeJavaScript(`
         (function() {
           var screen = document.getElementById('screen');
           if (!screen) return;
-          try { var ipc = require('electron').ipcRenderer; } catch(e) { return; }
+          var PREFIX = '${SYNC_PREFIX}';
 
           ['mousedown', 'mouseup', 'mousemove', 'contextmenu'].forEach(function(et) {
             screen.addEventListener(et, function(e) {
@@ -284,7 +275,7 @@ function createVNCWindows (config, groupIndex) {
               var realX = Math.round((e.clientX - rect.left) * scaleX);
               var realY = Math.round((e.clientY - rect.top) * scaleY);
               if (et === 'contextmenu') { e.preventDefault(); e.stopPropagation(); }
-              try { ipc.send('vnc-sync-event', { type: 'sync-mouse', eventType: et, x: realX, y: realY, buttons: e.buttons }); } catch(ex) {}
+              console.log(PREFIX + JSON.stringify({t:'m',et:et,x:realX,y:realY,b:e.buttons}));
             }, true);
           });
 
@@ -296,12 +287,38 @@ function createVNCWindows (config, groupIndex) {
             var scaleY = canvas.height / rect.height;
             var realX = Math.round((e.clientX - rect.left) * scaleX);
             var realY = Math.round((e.clientY - rect.top) * scaleY);
-            try { ipc.send('vnc-sync-event', { type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY }); } catch(ex) {}
+            console.log(PREFIX + JSON.stringify({t:'w',dy:e.deltaY,dx:e.deltaX,x:realX,y:realY}));
           }, true);
 
-          console.log('[sync] event capture injected ok');
+          console.log(PREFIX + 'INJECTED_OK');
         })()
       `).catch(() => {})
+    })
+
+    // ★ 主进程接收console.log中的同步事件信号
+    win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+      if (!message || !message.startsWith(SYNC_PREFIX)) return
+      const payload = message.substring(SYNC_PREFIX.length)
+      if (payload === 'INJECTED_OK') {
+        console.log(`Window ${i}: sync capture injected OK`)
+        return
+      }
+      if (!syncEnabled) return
+      try {
+        const data = JSON.parse(payload)
+        const sourceIndex = vncWindows.indexOf(win)
+        if (sourceIndex === -1) return
+
+        if (data.t === 'm') {
+          forwardSyncEvent(sourceIndex, {
+            type: 'sync-mouse', eventType: data.et, x: data.x, y: data.y, buttons: data.b
+          })
+        } else if (data.t === 'w') {
+          forwardSyncEvent(sourceIndex, {
+            type: 'sync-wheel', deltaY: data.dy, deltaX: data.dx, x: data.x, y: data.y
+          })
+        }
+      } catch (e) {}
     })
 
     win.loadURL(item.url)
@@ -323,19 +340,7 @@ app.whenReady().then(() => {
 })
 
 ipcMain.on('select-group', (event, groupIndex) => { createVNCWindows(readConfig(), groupIndex) })
-
-ipcMain.on('toggle-sync', (event, enabled) => {
-  syncEnabled = enabled
-  console.log(`Sync ${enabled ? 'enabled' : 'disabled'}`)
-})
-
-// ★ 接收VNC窗口上报的同步事件（鼠标+滚轮）
-ipcMain.on('vnc-sync-event', (event, data) => {
-  const sourceIndex = vncWindows.findIndex(w => w && !w.isDestroyed() && w.webContents === event.sender)
-  if (sourceIndex === -1) return
-  forwardSyncEvent(sourceIndex, data)
-})
-
+ipcMain.on('toggle-sync', (event, enabled) => { syncEnabled = enabled; console.log(`Sync ${enabled ? 'ON' : 'OFF'}`) })
 ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} })
   vncWindows.length = 0
@@ -343,5 +348,4 @@ ipcMain.on('exit-app', () => {
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
   app.quit(); process.exit(0)
 })
-
 app.on('window-all-closed', () => {})
