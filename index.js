@@ -460,90 +460,53 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 直接通过executeJavaScript调用RFB.messages.pointerEvent
-  // 不依赖postMessage（vnc_lite.html的message listener可能没注册或被隔离）
-  // 直接在页面上下文里查找RFB实例
+  // ★ 通过preload劫持的WebSocket直接发送VNC协议指针事件
+  // 绕过RFB实例和sendInputEvent，直接往VNC WebSocket发二进制数据
   win.webContents.executeJavaScript(`
     (function() {
       var action = ${JSON.stringify(action)};
       var x = ${x || 0};
       var y = ${y || 0};
 
-      // 方法1: 查找window上的rfb变量
-      var rfb = window.rfb || window.__rfb;
-
-      // 方法2: 遍历window属性找RFB实例
-      if (!rfb) {
-        for (var key in window) {
-          try {
-            if (window[key] && window[key]._sock && window[key]._display && typeof window[key].sendKey === 'function') {
-              rfb = window[key];
-              console.log('[API] found RFB instance at window.' + key);
-              break;
-            }
-          } catch(e) {}
-        }
+      if (!window.__vncSockets || window.__vncSockets.length === 0) {
+        console.log('[API] ERROR: no VNC WebSocket captured');
+        return 'NO_VNC_SOCK';
       }
 
-      // 方法3: 通过iframe查找
-      if (!rfb) {
-        try {
-          var iframes = document.querySelectorAll('iframe');
-          for (var i = 0; i < iframes.length; i++) {
-            try {
-              var iwin = iframes[i].contentWindow;
-              if (iwin && iwin.rfb) { rfb = iwin.rfb; break; }
-            } catch(e) {}
-          }
-        } catch(e) {}
+      // 用第一个(通常也是唯一一个)VNC WebSocket
+      var sockIdx = 0;
+      var sendPtr = window.__sendVNCPointer;
+      if (!sendPtr) {
+        console.log('[API] ERROR: __sendVNCPointer not found');
+        return 'NO_SEND_PTR';
       }
 
-      if (!rfb) {
-        console.log('[API] ERROR: RFB instance not found! screen=' + !!document.getElementById('screen'));
-        return 'NO_RFB';
-      }
-
-      var RFBClass = rfb.constructor;
-      if (!RFBClass || !RFBClass.messages || !RFBClass.messages.pointerEvent) {
-        console.log('[API] ERROR: RFB.messages.pointerEvent not found');
-        return 'NO_POINTER_EVENT';
-      }
-
-      var sock = rfb._sock;
-      var disp = rfb._display;
-      if (!sock || !disp) {
-        console.log('[API] ERROR: rfb._sock or rfb._display missing');
-        return 'NO_SOCK';
-      }
-
-      // VNC画面坐标直接用（x,y已经是VNC画面上的像素坐标）
-      var absX = disp.absX(x);
-      var absY = disp.absY(y);
-      console.log('[API] RFB found, action=' + action + ' x=' + x + ' y=' + y + ' absX=' + absX + ' absY=' + absY);
-
+      var result;
       if (action === 'click' || action === 'clickAll') {
-        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 0); // left down
-        RFBClass.messages.pointerEvent(sock, absX, absY, 0);       // all up
+        sendPtr(sockIdx, x, y, 1 << 0); // left down
+        sendPtr(sockIdx, x, y, 0);       // all up
+        result = 'OK';
       } else if (action === 'rightclick' || action === 'rightclickAll') {
-        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 2); // right down
-        RFBClass.messages.pointerEvent(sock, absX, absY, 0);       // all up
+        sendPtr(sockIdx, x, y, 1 << 2); // right down
+        sendPtr(sockIdx, x, y, 0);       // all up
+        result = 'OK';
       } else if (action === 'mousedown' || action === 'mousedownAll') {
-        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 0);
+        result = sendPtr(sockIdx, x, y, 1 << 0);
       } else if (action === 'mouseup' || action === 'mouseupAll') {
-        RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+        result = sendPtr(sockIdx, x, y, 0);
       } else if (action === 'mousemove' || action === 'mousemoveAll') {
-        RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+        result = sendPtr(sockIdx, x, y, 0);
       } else if (action === 'scroll' || action === 'scrollAll') {
         var dy = ${deltaY || 0};
         if (dy < 0) {
-          RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 3);
-          RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+          sendPtr(sockIdx, x, y, 1 << 3); sendPtr(sockIdx, x, y, 0);
         } else if (dy > 0) {
-          RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 4);
-          RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+          sendPtr(sockIdx, x, y, 1 << 4); sendPtr(sockIdx, x, y, 0);
         }
+        result = 'OK';
       }
-      return 'OK';
+      console.log('[API] sendVNCPointer action=' + action + ' x=' + x + ' y=' + y + ' result=' + result + ' sockCount=' + window.__vncSockets.length);
+      return result || 'UNKNOWN_ACTION';
     })()
   `).then(result => {
     console.log('sendToVNC result: win=' + winIdx + ' ' + result)
@@ -575,7 +538,8 @@ function createVNCWindows (config, groupIndex) {
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false,
-        nodeIntegration: true, contextIsolation: false
+        nodeIntegration: true, contextIsolation: false,
+        preload: path.join(__dirname, 'preload.js')
       }
     })
 
