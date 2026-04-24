@@ -64,8 +64,14 @@ function readConfig () {
   }
   console.log(`使用配置文件: ${configPath}`)
   try {
+    const rawBuf = fs.readFileSync(configPath)
+    // 自动检测编码：优先UTF-8，如果解析不出分组则尝试GBK
     const iconv = require('iconv-lite')
-    const content = iconv.decode(fs.readFileSync(configPath), 'gbk')
+    let content = rawBuf.toString('utf-8')
+    // 如果UTF-8解析不到"组"关键字，说明是GBK编码
+    if (!content.includes('组') || content.includes('')) {
+      content = iconv.decode(rawBuf, 'gbk')
+    }
     const config = { groups: [], items: [] }
     for (let i = 1; i <= 10; i++) {
       const m = content.match(new RegExp(`组${i}名称=(.+)`, 'm'))
