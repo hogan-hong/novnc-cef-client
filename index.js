@@ -460,38 +460,63 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 用sendInputEvent发送可信事件 + canvasInfoCache做坐标转换
-  // 之前窗口0能用说明这个方案有效，关键是确保所有窗口缓存就绪
-  let info = canvasInfoCache[winIdx]
+  // ★★★ 关键修复: sendInputEvent前必须实时获取canvas坐标转换 ★★★
+  // 缓存会过时(页面重连/resize时scaleX/rectLeft会变)
+  // 而且VNC竖屏模式的canvas尺寸和横屏完全不同，缓存可能取到错误的值
+  // 解决方案: 同步控制有效是因为它每次都从页面实时获取canvas信息
+  // API控制也应该走同样的路径——实时取canvas getBoundingClientRect
 
-  if (!info) {
-    // 缓存还没就绪，触发刷新后重试
-    refreshCanvasInfo(win, winIdx)
-    console.log('sendToVNC: window ' + winIdx + ' no cache, retrying...')
-    setTimeout(() => sendToVNC(winIdx, data), 500)
-    return
-  }
+  // ★ 方案: 像同步控制一样，注入JS到页面里，直接用canvas坐标执行click
+  // 这样坐标转换在页面内部完成，不需要缓存，也不需要sendInputEvent
+  const actionStr = JSON.stringify(action)
+  const vncX = x || 0
+  const vncY = y || 0
 
-  // VNC画面坐标 → 窗口viewport坐标
-  const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
-  const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
-  console.log('sendToVNC: win=' + winIdx + ' action=' + action + ' vncX=' + (x||0) + ' vncY=' + (y||0) + ' vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX.toFixed(2))
+  win.webContents.executeJavaScript(`
+    (function() {
+      var s = document.getElementById('screen');
+      if (!s) return 'NO_SCREEN';
+      var c = s.querySelector('canvas');
+      if (!c || c.width === 0 || c.height === 0) return 'NO_CANVAS';
+      var rect = c.getBoundingClientRect();
+      var scaleX = c.width / rect.width;
+      var scaleY = c.height / rect.height;
+      // VNC画面坐标 → viewport坐标
+      var vx = Math.round(${vncX} / scaleX + rect.left);
+      var vy = Math.round(${vncY} / scaleY + rect.top);
+      var action = ${actionStr};
 
-  if (action === 'click' || action === 'clickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'rightclick' || action === 'rightclickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
-  } else if (action === 'mousedown' || action === 'mousedownAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mouseup' || action === 'mouseupAll') {
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mousemove' || action === 'mousemoveAll') {
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
-  } else if (action === 'scroll' || action === 'scrollAll') {
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
-  }
+      // 构造真实的mouse事件 (isTrusted=false 但我们用dispatchEvent只是让noVNC收到)
+      // ★ 不行！noVNC检查isTrusted，必须用其他方式
+      // ★ 最佳方案: 直接触发noVNC内部的事件处理
+      // noVNC在canvas上监听mousedown/mouseup/mousemove/wheel
+      // 我们用dispatchEvent + bubbles + cancelable让它冒泡到canvas的listener
+      // 但是isTrusted=false所以noVNC会忽略...
+      // ★★ 最终方案: 通过window.postMessage发给vnc_lite.html的sync消息处理器!
+      // vnc_lite.html已经有sync-mouse-event, sync-wheel-event处理器
+      // 这些处理器直接调用RFB.messages.pointerEvent，不需要isTrusted!
+      console.log('[API] action=' + action + ' vncX=${vncX} vncY=${vncY} vx=' + vx + ' vy=' + vy + ' scaleX=' + scaleX.toFixed(2));
+
+      if (action === 'click' || action === 'clickAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 1 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+      } else if (action === 'rightclick' || action === 'rightclickAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 2 }, '*');
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+      } else if (action === 'mousedown' || action === 'mousedownAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 1 }, '*');
+      } else if (action === 'mouseup' || action === 'mouseupAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+      } else if (action === 'mousemove' || action === 'mousemoveAll') {
+        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousemove', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: ${vncX}, y: ${vncY} }, '*');
+      }
+      return 'OK vx=' + vx + ' vy=' + vy + ' scaleX=' + scaleX.toFixed(2);
+    })()
+  `).then(result => {
+    console.log('sendToVNC result: win=' + winIdx + ' ' + result)
+  }).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
 }
 
 // ========== 创建VNC窗口 ==========
