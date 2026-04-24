@@ -427,7 +427,6 @@ function handleControlCommand (data) {
 function sendToVNC (winIdx, data) {
   const win = vncWindows[winIdx]
   if (!win || win.isDestroyed()) return
-  const info = canvasInfoCache[winIdx]
   const { action, x, y, deltaY, deltaX, text, code, down } = data
 
   if (action === 'clipboard' || action === 'clipboardAll') {
@@ -446,44 +445,39 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  if (!info) {
-    // canvas信息还没缓存，强制刷新后重试
-    console.log(`sendToVNC: window ${winIdx} canvas info missing, refreshing...`)
-    refreshCanvasInfo(win, winIdx)
-    // 等刷新完成后重试，最多重试3次
-    let retryCount = 0
-    const retry = () => {
-      if (canvasInfoCache[winIdx]) {
-        // 有缓存了，重新执行
-        sendToVNC(winIdx, data)
-      } else if (retryCount < 3) {
-        retryCount++
-        setTimeout(retry, 1500)
-      } else {
-        console.log(`sendToVNC: window ${winIdx} still no canvas info after 3 retries, giving up`)
-      }
-    }
-    setTimeout(retry, 1500)
-    return
-  }
-  const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
-  const vy = Math.round((y || 0) / info.scaleY + info.rectTop)
+  // ★ 不再依赖canvasInfoCache，直接在页面内实时转换坐标并注入事件
+  // 通过executeJavaScript在noVNC页面内直接获取canvas信息，然后dispatch事件
+  win.webContents.executeJavaScript(`
+    (function() {
+      var s = document.getElementById('screen');
+      if (!s) return;
+      var c = s.querySelector('canvas');
+      if (!c || c.width === 0 || c.height === 0) return;
+      var rect = c.getBoundingClientRect();
+      var scaleX = c.width / rect.width;
+      var scaleY = c.height / rect.height;
+      // VNC画面坐标 → 浏览器viewport坐标
+      var vx = Math.round((${x || 0}) / scaleX + rect.left);
+      var vy = Math.round((${y || 0}) / scaleY + rect.top);
 
-  if (action === 'click' || action === 'clickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mousedown' || action === 'mousedownAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mouseup' || action === 'mouseupAll') {
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 })
-  } else if (action === 'mousemove' || action === 'mousemoveAll') {
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy })
-  } else if (action === 'rightclick' || action === 'rightclickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 })
-  } else if (action === 'scroll' || action === 'scrollAll') {
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true })
-  }
+      var action = ${JSON.stringify(action)};
+      if (action === 'click' || action === 'clickAll') {
+        c.dispatchEvent(new MouseEvent('mousedown', {clientX: vx, clientY: vy, button: 0, bubbles: true}));
+        c.dispatchEvent(new MouseEvent('mouseup', {clientX: vx, clientY: vy, button: 0, bubbles: true}));
+      } else if (action === 'rightclick' || action === 'rightclickAll') {
+        c.dispatchEvent(new MouseEvent('mousedown', {clientX: vx, clientY: vy, button: 2, bubbles: true}));
+        c.dispatchEvent(new MouseEvent('mouseup', {clientX: vx, clientY: vy, button: 2, bubbles: true}));
+      } else if (action === 'mousedown' || action === 'mousedownAll') {
+        c.dispatchEvent(new MouseEvent('mousedown', {clientX: vx, clientY: vy, button: 0, bubbles: true}));
+      } else if (action === 'mouseup' || action === 'mouseupAll') {
+        c.dispatchEvent(new MouseEvent('mouseup', {clientX: vx, clientY: vy, button: 0, bubbles: true}));
+      } else if (action === 'mousemove' || action === 'mousemoveAll') {
+        c.dispatchEvent(new MouseEvent('mousemove', {clientX: vx, clientY: vy, bubbles: true}));
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        c.dispatchEvent(new WheelEvent('wheel', {clientX: vx, clientY: vy, deltaX: ${deltaX || 0}, deltaY: ${deltaY || 0}, deltaMode: 0, bubbles: true}));
+      }
+    })()
+  `).catch(() => {})
 }
 
 // ========== 创建VNC窗口 ==========
