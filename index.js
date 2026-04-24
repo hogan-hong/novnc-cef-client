@@ -250,12 +250,8 @@ function refreshCanvasInfo (win, idx, retryCount = 0) {
   `).then(info => {
     if (info) {
       canvasInfoCache[idx] = info
-      console.log(`canvasInfoCache[${idx}] updated: scaleX=${info.scaleX.toFixed(2)} scaleY=${info.scaleY.toFixed(2)} rectLeft=${info.rectLeft} rectTop=${info.rectTop} canvasW=${info.width} canvasH=${info.height}`)
     } else if (retryCount < 10) {
-      console.log(`refreshCanvasInfo: window ${idx} canvas not ready, retry ${retryCount + 1}/10`)
       setTimeout(() => refreshCanvasInfo(win, idx, retryCount + 1), 2000)
-    } else {
-      console.log(`refreshCanvasInfo: window ${idx} failed after 10 retries`)
     }
   }).catch(() => {
     if (retryCount < 10) setTimeout(() => refreshCanvasInfo(win, idx, retryCount + 1), 2000)
@@ -287,7 +283,6 @@ function refreshCanvasInfoAsync (win, idx) {
     `).then(info => {
       if (info) {
         canvasInfoCache[idx] = info
-        console.log(`refreshCanvasInfoAsync[${idx}]: scaleX=${info.scaleX.toFixed(2)} scaleY=${info.scaleY.toFixed(2)} canvasW=${info.width} canvasH=${info.height}`)
       }
       resolve(info)
     }).catch(() => { resolve(null) })
@@ -416,7 +411,6 @@ function startAPIServer (groupIndex) {
           if (newMaster >= 0 && newMaster < vncWindows.length) {
             masterWindowIndex = newMaster
             updateMasterButtons()
-            console.log(`Master window changed to: ${masterWindowIndex}`)
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end('{"ok":true}')
@@ -574,15 +568,10 @@ function sendToVNC (winIdx, data) {
   const apiY = y || 0
 
   // ★ 越界检查：API坐标基于客户端 856×480
-  if (apiX < 0 || apiX >= CLIENT_WIDTH || apiY < 0 || apiY >= CLIENT_HEIGHT) {
-    console.log(`sendToVNC: win=${winIdx} 坐标越界 api(${apiX},${apiY}) 限制=${CLIENT_WIDTH}×${CLIENT_HEIGHT} — 已忽略`)
-    return
-  }
+  if (apiX < 0 || apiX >= CLIENT_WIDTH || apiY < 0 || apiY >= CLIENT_HEIGHT) return
 
   // ★ 纯数学算viewport，不需要canvas缓存
   const vp = apiToViewport(apiX, apiY, win)
-
-  console.log(`sendToVNC: win=${winIdx} action=${action} api(${apiX},${apiY}) → vp(${vp.x},${vp.y})`)
 
   if (action === 'click' || action === 'clickAll') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
@@ -713,7 +702,7 @@ function createVNCWindows (config, groupIndex) {
             sendSync({ type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY });
           }, true);
 
-          console.log('[novnc-sync] capture v7 (sendInputEvent + master + bounds-check) injected, window=' + WIN_IDX);
+          console.log('[novnc-sync] capture v7 (sendInputEvent + master) injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
     })
@@ -749,7 +738,7 @@ ipcMain.on('toggle-sync', (event, enabled) => {
   } else {
     removeMasterButtons()
   }
-  console.log(`Sync ${enabled ? 'ON' : 'OFF'}, master=${masterWindowIndex}`)
+  console.log(`Sync ${enabled ? 'ON' : 'OFF'}`)
 })
 ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
