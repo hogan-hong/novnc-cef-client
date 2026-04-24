@@ -214,7 +214,7 @@ function updateMasterButtons () {
 }
 
 // ========== 刷新 canvas 信息缓存 ==========
-function refreshCanvasInfo (win, idx) {
+function refreshCanvasInfo (win, idx, retryCount = 0) {
   if (!win || win.isDestroyed()) return
   win.webContents.executeJavaScript(`
     (function() {
@@ -235,8 +235,17 @@ function refreshCanvasInfo (win, idx) {
       };
     })()
   `).then(info => {
-    if (info) canvasInfoCache[idx] = info
-  }).catch(() => {})
+    if (info) {
+      canvasInfoCache[idx] = info
+    } else if (retryCount < 10) {
+      // canvas还没渲染出来，延迟重试
+      setTimeout(() => refreshCanvasInfo(win, idx, retryCount + 1), 2000)
+    } else {
+      console.log(`refreshCanvasInfo: window ${idx} failed after 10 retries`)
+    }
+  }).catch(() => {
+    if (retryCount < 10) setTimeout(() => refreshCanvasInfo(win, idx, retryCount + 1), 2000)
+  })
 }
 
 // ========== VNC坐标 → 目标窗口viewport坐标 ==========
@@ -438,10 +447,23 @@ function sendToVNC (winIdx, data) {
   }
 
   if (!info) {
-    // canvas信息还没缓存，尝试刷新后重试，不要直接丢掉
-    console.log(`sendToVNC: window ${winIdx} canvas info missing, refreshing and retrying...`)
+    // canvas信息还没缓存，强制刷新后重试
+    console.log(`sendToVNC: window ${winIdx} canvas info missing, refreshing...`)
     refreshCanvasInfo(win, winIdx)
-    setTimeout(() => sendToVNC(winIdx, data), 1500)
+    // 等刷新完成后重试，最多重试3次
+    let retryCount = 0
+    const retry = () => {
+      if (canvasInfoCache[winIdx]) {
+        // 有缓存了，重新执行
+        sendToVNC(winIdx, data)
+      } else if (retryCount < 3) {
+        retryCount++
+        setTimeout(retry, 1500)
+      } else {
+        console.log(`sendToVNC: window ${winIdx} still no canvas info after 3 retries, giving up`)
+      }
+    }
+    setTimeout(retry, 1500)
     return
   }
   const vx = Math.round((x || 0) / info.scaleX + info.rectLeft)
