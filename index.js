@@ -4,6 +4,19 @@ const fs = require('fs')
 const { execFile } = require('child_process')
 const http = require('http')
 
+// ========== 日志写入同目录Log.txt ==========
+const logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
+const origLog = console.log
+const origErr = console.error
+function writeLog (msg) {
+  const line = `[${new Date().toLocaleString('zh-CN', {hour12:false})}] ${msg}\n`
+  try { fs.appendFileSync(logPath, line, 'utf-8') } catch (e) {}
+}
+console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
+console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
+// 启动时清空旧日志
+try { fs.writeFileSync(logPath, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8') } catch (e) {}
+
 // ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
 app.commandLine.appendSwitch('disable-direct-composition')
 app.commandLine.appendSwitch('no-sandbox')
@@ -237,8 +250,9 @@ function refreshCanvasInfo (win, idx, retryCount = 0) {
   `).then(info => {
     if (info) {
       canvasInfoCache[idx] = info
+      console.log(`canvasInfoCache[${idx}] updated: scaleX=${info.scaleX.toFixed(2)} scaleY=${info.scaleY.toFixed(2)} rectLeft=${info.rectLeft} rectTop=${info.rectTop} canvasW=${info.width} canvasH=${info.height}`)
     } else if (retryCount < 10) {
-      // canvas还没渲染出来，延迟重试
+      console.log(`refreshCanvasInfo: window ${idx} canvas not ready, retry ${retryCount + 1}/10`)
       setTimeout(() => refreshCanvasInfo(win, idx, retryCount + 1), 2000)
     } else {
       console.log(`refreshCanvasInfo: window ${idx} failed after 10 retries`)
@@ -426,8 +440,9 @@ function handleControlCommand (data) {
 
 function sendToVNC (winIdx, data) {
   const win = vncWindows[winIdx]
-  if (!win || win.isDestroyed()) return
+  if (!win || win.isDestroyed()) { console.log(`sendToVNC: window ${winIdx} destroyed, skip`); return }
   const { action, x, y, deltaY, deltaX, text, code, down } = data
+  console.log(`sendToVNC: winIdx=${winIdx} action=${action} x=${x} y=${y} cacheExists=${!!canvasInfoCache[winIdx]}`)
 
   if (action === 'clipboard' || action === 'clipboardAll') {
     win.webContents.executeJavaScript(`
