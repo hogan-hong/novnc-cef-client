@@ -97,9 +97,12 @@ function injectMasterButtons () {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       (function() {
-        // 避免重复注入
-        if (document.getElementById('__novnc_master_btn')) {
-          document.getElementById('__novnc_master_btn').style.display = 'block';
+        // 避免重复注入：已有按钮时显示并更新样式
+        var existingBtn = document.getElementById('__novnc_master_btn');
+        if (existingBtn) {
+          existingBtn.style.display = 'block';
+          existingBtn.style.background = ${i} === ${masterWindowIndex} ? '#28a745' : '#555';
+          existingBtn.textContent = ${i} === ${masterWindowIndex} ? '主控✓' : '主控';
           return;
         }
         var btn = document.createElement('div');
@@ -541,10 +544,13 @@ ipcMain.on('select-group', (event, groupIndex) => { createVNCWindows(readConfig(
 ipcMain.on('toggle-sync', (event, enabled) => {
   syncEnabled = enabled
   if (enabled) {
-    masterWindowIndex = 0  // 默认第一个窗口为主控
+    // ★ 不重置masterWindowIndex，保留上次用户选择的主控窗口
     vncWindows.forEach((w, i) => refreshCanvasInfo(w, i))
-    // ★ 同步开启时，在每个窗口注入主控按钮
-    setTimeout(() => injectMasterButtons(), 300)
+    // ★ 同步开启时，注入/更新主控按钮（确保显示与实际一致）
+    setTimeout(() => {
+      injectMasterButtons()
+      updateMasterButtons()
+    }, 300)
   } else {
     // ★ 同步关闭时，移除主控按钮
     removeMasterButtons()
