@@ -460,43 +460,28 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★★★ 关键修复: sendInputEvent前必须实时获取canvas坐标转换 ★★★
-  // 缓存会过时(页面重连/resize时scaleX/rectLeft会变)
-  // 而且VNC竖屏模式的canvas尺寸和横屏完全不同，缓存可能取到错误的值
-  // 解决方案: 同步控制有效是因为它每次都从页面实时获取canvas信息
-  // API控制也应该走同样的路径——实时取canvas getBoundingClientRect
-
-  // ★ 方案: 像同步控制一样，注入JS到页面里，直接用canvas坐标执行click
-  // 这样坐标转换在页面内部完成，不需要缓存，也不需要sendInputEvent
+  // ★★★ API控制: 同时用两种方式发送，诊断哪个有效 ★★★
+  // 方式1: window.postMessage → vnc_lite.html的sync-mouse-event处理器
+  // 方式2: sendInputEvent + 实时canvas坐标(从executeJavaScript获取)
   const actionStr = JSON.stringify(action)
   const vncX = x || 0
   const vncY = y || 0
 
+  // 先获取实时canvas坐标，然后双发
   win.webContents.executeJavaScript(`
     (function() {
       var s = document.getElementById('screen');
-      if (!s) return 'NO_SCREEN';
+      if (!s) return JSON.stringify({err:'NO_SCREEN'});
       var c = s.querySelector('canvas');
-      if (!c || c.width === 0 || c.height === 0) return 'NO_CANVAS';
+      if (!c || c.width === 0 || c.height === 0) return JSON.stringify({err:'NO_CANVAS'});
       var rect = c.getBoundingClientRect();
       var scaleX = c.width / rect.width;
       var scaleY = c.height / rect.height;
-      // VNC画面坐标 → viewport坐标
       var vx = Math.round(${vncX} / scaleX + rect.left);
       var vy = Math.round(${vncY} / scaleY + rect.top);
+
+      // ★ 方式1: postMessage给sync-mouse-event处理器
       var action = ${actionStr};
-
-      // 构造真实的mouse事件 (isTrusted=false 但我们用dispatchEvent只是让noVNC收到)
-      // ★ 不行！noVNC检查isTrusted，必须用其他方式
-      // ★ 最佳方案: 直接触发noVNC内部的事件处理
-      // noVNC在canvas上监听mousedown/mouseup/mousemove/wheel
-      // 我们用dispatchEvent + bubbles + cancelable让它冒泡到canvas的listener
-      // 但是isTrusted=false所以noVNC会忽略...
-      // ★★ 最终方案: 通过window.postMessage发给vnc_lite.html的sync消息处理器!
-      // vnc_lite.html已经有sync-mouse-event, sync-wheel-event处理器
-      // 这些处理器直接调用RFB.messages.pointerEvent，不需要isTrusted!
-      console.log('[API] action=' + action + ' vncX=${vncX} vncY=${vncY} vx=' + vx + ' vy=' + vy + ' scaleX=' + scaleX.toFixed(2));
-
       if (action === 'click' || action === 'clickAll') {
         window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: ${vncX}, y: ${vncY}, buttons: 1 }, '*');
         window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: ${vncX}, y: ${vncY}, buttons: 0 }, '*');
@@ -512,10 +497,36 @@ function sendToVNC (winIdx, data) {
       } else if (action === 'scroll' || action === 'scrollAll') {
         window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: ${vncX}, y: ${vncY} }, '*');
       }
-      return 'OK vx=' + vx + ' vy=' + vy + ' scaleX=' + scaleX.toFixed(2);
+
+      return JSON.stringify({vx:vx, vy:vy, scaleX:scaleX.toFixed(2)});
     })()
   `).then(result => {
-    console.log('sendToVNC result: win=' + winIdx + ' ' + result)
+    // ★ 方式2: 用获取到的实时坐标发sendInputEvent
+    try {
+      var info = JSON.parse(result);
+      if (info.err) { console.log('sendToVNC canvas err: win=' + winIdx + ' ' + info.err); return; }
+      var vx = info.vx, vy = info.vy;
+
+      // 先focus窗口 + 发mouseMove让Chromium hit-test正确
+      if (win.isMinimized && win.isMinimized()) win.restore();
+      win.moveTop();
+      win.focus();
+
+      if (action === 'click' || action === 'clickAll') {
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy });
+        win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'left', clickCount: 1 });
+      } else if (action === 'rightclick' || action === 'rightclickAll') {
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: vx, y: vy });
+        win.webContents.sendInputEvent({ type: 'mouseDown', x: vx, y: vy, button: 'right', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: vx, y: vy, button: 'right', clickCount: 1 });
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        win.webContents.sendInputEvent({ type: 'mouseWheel', x: vx, y: vy, deltaX: deltaX || 0, deltaY: deltaY || 0, canScroll: true });
+      }
+      console.log('sendToVNC dual: win=' + winIdx + ' postMessage+sendInput vx=' + vx + ' vy=' + vy + ' scaleX=' + info.scaleX);
+    } catch(e) {
+      console.log('sendToVNC parse err: win=' + winIdx + ' ' + e.message + ' raw=' + result);
+    }
   }).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
 }
 
