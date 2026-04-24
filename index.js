@@ -258,37 +258,6 @@ function refreshCanvasInfo (win, idx, retryCount = 0) {
   })
 }
 
-// ★ 刷新canvas缓存并等待结果（Promise版本，API调用前使用）
-function refreshCanvasInfoAsync (win, idx) {
-  return new Promise((resolve) => {
-    if (!win || win.isDestroyed()) { resolve(null); return }
-    win.webContents.executeJavaScript(`
-      (function() {
-        var s = document.getElementById('screen');
-        if (!s) return null;
-        var c = s.querySelector('canvas');
-        if (!c || c.width === 0 || c.height === 0) return null;
-        var rect = c.getBoundingClientRect();
-        return {
-          width: c.width,
-          height: c.height,
-          rectLeft: rect.left,
-          rectTop: rect.top,
-          rectWidth: rect.width,
-          rectHeight: rect.height,
-          scaleX: c.width / rect.width,
-          scaleY: c.height / rect.height
-        };
-      })()
-    `).then(info => {
-      if (info) {
-        canvasInfoCache[idx] = info
-      }
-      resolve(info)
-    }).catch(() => { resolve(null) })
-  })
-}
-
 // ========== VNC坐标 → 目标窗口viewport坐标 ==========
 function vncToViewport (vncX, vncY, targetIdx) {
   const info = canvasInfoCache[targetIdx]
@@ -319,11 +288,9 @@ function apiToViewport (apiX, apiY, win) {
   return { x: vpX, y: vpY }
 }
 
-// ★★★ 同步核心逻辑 v7 — sendInputEvent + 主控切换 + 越界保护 ★★★
-//
+// ★★★ 同步核心逻辑 — sendInputEvent + 主控切换 ★★★
 // 只有主控窗口 (masterWindowIndex) 的输入会同步到其他窗口
 // 其他窗口可以正常单独操作，不会影响别的窗口
-// ★ 越界保护：坐标超出 856×480 → 直接忽略，防止搞坏noVNC内部状态
 
 // ========== 同步：转发鼠标事件到其他窗口 ==========
 function forwardMouseEvent (sourceIdx, data) {
@@ -702,7 +669,7 @@ function createVNCWindows (config, groupIndex) {
             sendSync({ type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY });
           }, true);
 
-          console.log('[novnc-sync] capture v7 (sendInputEvent + master) injected, window=' + WIN_IDX);
+          console.log('[novnc-sync] capture injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
     })
