@@ -30,45 +30,17 @@ const canvasInfoCache = {}
 
 // ========== 读取配置文件 ==========
 function readConfig () {
-  // 优先使用命令行参数指定的配置文件路径: NoVNC Client.exe --config "C:\path\to\配置文件.int"
-  // 支持两种写法: --config=路径 或 --config 路径
-  let configPath = null
-  const argv = process.argv
-  const configIdx = argv.findIndex(a => a === '--config' || a.startsWith('--config='))
-  if (configIdx !== -1) {
-    if (argv[configIdx] === '--config') {
-      // --config "路径" 写法
-      configPath = argv[configIdx + 1] || ''
-    } else {
-      // --config=路径 写法
-      configPath = argv[configIdx].substring('--config='.length)
-    }
-    // 去掉可能的引号
-    if (configPath.startsWith('"') && configPath.endsWith('"')) configPath = configPath.slice(1, -1)
-    if (configPath.startsWith("'") && configPath.endsWith("'")) configPath = configPath.slice(1, -1)
-    // 规范化路径（处理Windows反斜杠等问题）
-    configPath = path.normalize(configPath)
-  }
-  if (!configPath) {
-    const searchPaths = [
-      path.join(path.dirname(app.getPath('exe')), '配置文件.int'),
-      path.join(process.cwd(), '配置文件.int'),
-      path.join(app.getAppPath(), '配置文件.int')
-    ]
-    for (const p of searchPaths) { if (fs.existsSync(p)) { configPath = p; break } }
-  }
-  if (!configPath || !fs.existsSync(configPath)) {
-    const hint = configPath ? `指定的配置文件未找到:\n${configPath}` : '未找到配置文件！\n请放在exe同目录，或使用 --config 参数指定路径'
-    require('electron').dialog.showErrorBox('配置文件不存在', hint)
+  const configPath = path.join(path.dirname(app.getPath('exe')), '配置文件.int')
+  if (!fs.existsSync(configPath)) {
+    require('electron').dialog.showErrorBox('配置文件不存在', `未找到配置文件！\n路径: ${configPath}\n请将 配置文件.int 放在exe同目录下`)
     return null
   }
   console.log(`使用配置文件: ${configPath}`)
   try {
     const rawBuf = fs.readFileSync(configPath)
-    // 自动检测编码：优先UTF-8，如果解析不出分组则尝试GBK
     const iconv = require('iconv-lite')
+    // 自动检测编码：先UTF-8，解析不到分组则GBK
     let content = rawBuf.toString('utf-8')
-    // 如果UTF-8解析不到"组"关键字，说明是GBK编码
     if (!content.includes('组') || content.includes('')) {
       content = iconv.decode(rawBuf, 'gbk')
     }
@@ -82,6 +54,10 @@ function readConfig () {
       const t = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
       const ip = content.match(new RegExp(`控制IP${i}=(.+)`, 'm'))
       if (u && u[1].trim()) config.items.push({ index: i, url: u[1].trim(), title: t ? t[1].trim() : `窗口${i}`, controlIP: ip ? ip[1].trim() : '' })
+    }
+    if (config.groups.length === 0) {
+      require('electron').dialog.showErrorBox('配置异常', `未找到分组信息！\n请检查 配置文件.int 中的 组1名称 等字段`)
+      return null
     }
     return config
   } catch (e) {
