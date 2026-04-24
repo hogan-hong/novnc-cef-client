@@ -30,17 +30,24 @@ const canvasInfoCache = {}
 
 // ========== 读取配置文件 ==========
 function readConfig () {
-  // 优先使用命令行参数指定的配置文件路径: NoVNC Client.exe --config=C:\path\to\配置文件.int
-  const configArg = process.argv.find(a => a.startsWith('--config='))
+  // 优先使用命令行参数指定的配置文件路径: NoVNC Client.exe --config "C:\path\to\配置文件.int"
+  // 支持两种写法: --config=路径 或 --config 路径
   let configPath = null
-  if (configArg) {
-    configPath = configArg.substring('--config='.length)
+  const argv = process.argv
+  const configIdx = argv.findIndex(a => a === '--config' || a.startsWith('--config='))
+  if (configIdx !== -1) {
+    if (argv[configIdx] === '--config') {
+      // --config "路径" 写法
+      configPath = argv[configIdx + 1] || ''
+    } else {
+      // --config=路径 写法
+      configPath = argv[configIdx].substring('--config='.length)
+    }
     // 去掉可能的引号
     if (configPath.startsWith('"') && configPath.endsWith('"')) configPath = configPath.slice(1, -1)
-    if (!fs.existsSync(configPath)) {
-      require('electron').dialog.showErrorBox('配置文件不存在', `指定的配置文件未找到:\n${configPath}`)
-      app.quit(); return null
-    }
+    if (configPath.startsWith("'") && configPath.endsWith("'")) configPath = configPath.slice(1, -1)
+    // 规范化路径（处理Windows反斜杠等问题）
+    configPath = path.normalize(configPath)
   }
   if (!configPath) {
     const searchPaths = [
@@ -50,22 +57,31 @@ function readConfig () {
     ]
     for (const p of searchPaths) { if (fs.existsSync(p)) { configPath = p; break } }
   }
-  if (!configPath) return null
+  if (!configPath || !fs.existsSync(configPath)) {
+    const hint = configPath ? `指定的配置文件未找到:\n${configPath}` : '未找到配置文件！\n请放在exe同目录，或使用 --config 参数指定路径'
+    require('electron').dialog.showErrorBox('配置文件不存在', hint)
+    return null
+  }
   console.log(`使用配置文件: ${configPath}`)
-  const iconv = require('iconv-lite')
-  const content = iconv.decode(fs.readFileSync(configPath), 'gbk')
-  const config = { groups: [], items: [] }
-  for (let i = 1; i <= 10; i++) {
-    const m = content.match(new RegExp(`组${i}名称=(.+)`, 'm'))
-    if (m && m[1].trim()) config.groups.push({ index: i, name: m[1].trim() })
+  try {
+    const iconv = require('iconv-lite')
+    const content = iconv.decode(fs.readFileSync(configPath), 'gbk')
+    const config = { groups: [], items: [] }
+    for (let i = 1; i <= 10; i++) {
+      const m = content.match(new RegExp(`组${i}名称=(.+)`, 'm'))
+      if (m && m[1].trim()) config.groups.push({ index: i, name: m[1].trim() })
+    }
+    for (let i = 1; i <= 100; i++) {
+      const u = content.match(new RegExp(`URL${i}=(.+)`, 'm'))
+      const t = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
+      const ip = content.match(new RegExp(`控制IP${i}=(.+)`, 'm'))
+      if (u && u[1].trim()) config.items.push({ index: i, url: u[1].trim(), title: t ? t[1].trim() : `窗口${i}`, controlIP: ip ? ip[1].trim() : '' })
+    }
+    return config
+  } catch (e) {
+    require('electron').dialog.showErrorBox('读取配置文件失败', `文件: ${configPath}\n错误: ${e.message}`)
+    return null
   }
-  for (let i = 1; i <= 100; i++) {
-    const u = content.match(new RegExp(`URL${i}=(.+)`, 'm'))
-    const t = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
-    const ip = content.match(new RegExp(`控制IP${i}=(.+)`, 'm'))
-    if (u && u[1].trim()) config.items.push({ index: i, url: u[1].trim(), title: t ? t[1].trim() : `窗口${i}`, controlIP: ip ? ip[1].trim() : '' })
-  }
-  return config
 }
 
 // ========== 设置第二层窗口标题 ==========
@@ -547,14 +563,14 @@ function createVNCWindows (config, groupIndex) {
 // ========== 主流程 ==========
 app.whenReady().then(() => {
   const config = readConfig()
-  if (!config) { require('electron').dialog.showErrorBox('读取配置文件异常', '未找到配置文件！'); app.quit(); return }
+  if (!config) { app.quit(); return }
   if (config.groups.length === 0) { require('electron').dialog.showErrorBox('配置异常', '未找到分组信息！'); app.quit(); return }
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
   app.on('activate', () => {})
 })
 
-ipcMain.on('select-group', (event, groupIndex) => { createVNCWindows(readConfig(), groupIndex) })
+ipcMain.on('select-group', (event, groupIndex) => { const config = readConfig(); if (config) createVNCWindows(config, groupIndex) })
 ipcMain.on('toggle-sync', (event, enabled) => {
   syncEnabled = enabled
   if (enabled) {
