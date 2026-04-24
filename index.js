@@ -411,7 +411,7 @@ function createVNCWindows (config, groupIndex) {
   if (groupItems.length === 0) return
 
   const workArea = screen.getPrimaryDisplay().workAreaSize
-  const winW = 853, winH = 520
+  const winW = 853, winH = 500
   const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
   const offsetX = Math.floor((workArea.width - cols * winW) / 2)
