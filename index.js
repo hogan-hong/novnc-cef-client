@@ -30,14 +30,28 @@ const canvasInfoCache = {}
 
 // ========== 读取配置文件 ==========
 function readConfig () {
-  const searchPaths = [
-    path.join(path.dirname(app.getPath('exe')), '配置文件.int'),
-    path.join(process.cwd(), '配置文件.int'),
-    path.join(app.getAppPath(), '配置文件.int')
-  ]
+  // 优先使用命令行参数指定的配置文件路径: NoVNC Client.exe --config=C:\path\to\配置文件.int
+  const configArg = process.argv.find(a => a.startsWith('--config='))
   let configPath = null
-  for (const p of searchPaths) { if (fs.existsSync(p)) { configPath = p; break } }
+  if (configArg) {
+    configPath = configArg.substring('--config='.length)
+    // 去掉可能的引号
+    if (configPath.startsWith('"') && configPath.endsWith('"')) configPath = configPath.slice(1, -1)
+    if (!fs.existsSync(configPath)) {
+      require('electron').dialog.showErrorBox('配置文件不存在', `指定的配置文件未找到:\n${configPath}`)
+      app.quit(); return null
+    }
+  }
+  if (!configPath) {
+    const searchPaths = [
+      path.join(path.dirname(app.getPath('exe')), '配置文件.int'),
+      path.join(process.cwd(), '配置文件.int'),
+      path.join(app.getAppPath(), '配置文件.int')
+    ]
+    for (const p of searchPaths) { if (fs.existsSync(p)) { configPath = p; break } }
+  }
   if (!configPath) return null
+  console.log(`使用配置文件: ${configPath}`)
   const iconv = require('iconv-lite')
   const content = iconv.decode(fs.readFileSync(configPath), 'gbk')
   const config = { groups: [], items: [] }
