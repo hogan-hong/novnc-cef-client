@@ -307,11 +307,22 @@ function vncToViewport (vncX, vncY, targetIdx) {
 // ★★★ 固定横屏分辨率 ★★★
 // API坐标基于客户端分辨率 856×480
 // 实际手机分辨率 1334×750
-// API流程：越界检查(856×480) → 按比例转换到手机分辨率(1334×750) → vncToViewport → sendInputEvent
+// API流程：越界检查(856×480) → 纯数学算viewport(不需要canvas缓存) → sendInputEvent
 const CLIENT_WIDTH = 856
 const CLIENT_HEIGHT = 480
 const PHONE_WIDTH = 1334
 const PHONE_HEIGHT = 750
+
+// ★ API坐标 → viewport坐标（纯数学计算，不需要canvas缓存）
+// 1. API坐标(856×480) → 手机分辨率(1334×750)
+// 2. 手机分辨率 → 窗口viewport（用getContentSize算scale和居中偏移）
+function apiToViewport (apiX, apiY, win) {
+  const [winW, winH] = win.getContentSize()
+  const scale = Math.min(winW / PHONE_WIDTH, winH / PHONE_HEIGHT)
+  const vpX = Math.round(apiX * (PHONE_WIDTH / CLIENT_WIDTH) * scale + (winW - PHONE_WIDTH * scale) / 2)
+  const vpY = Math.round(apiY * (PHONE_HEIGHT / CLIENT_HEIGHT) * scale + (winH - PHONE_HEIGHT * scale) / 2)
+  return { x: vpX, y: vpY }
+}
 
 // ★★★ 同步核心逻辑 v7 — sendInputEvent + 主控切换 + 越界保护 ★★★
 //
@@ -329,9 +340,6 @@ function forwardMouseEvent (sourceIdx, data) {
   vncWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
-
-    // ★ 越界检查：VNC坐标超出手机分辨率则忽略
-    if (vncX < 0 || vncX >= PHONE_WIDTH || vncY < 0 || vncY >= PHONE_HEIGHT) return
 
     const vp = vncToViewport(vncX, vncY, i)
     if (!vp) return
@@ -371,9 +379,6 @@ function forwardWheelEvent (sourceIdx, data) {
   vncWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
-
-    // ★ 越界检查：VNC坐标超出手机分辨率则忽略
-    if (data.x < 0 || data.x >= PHONE_WIDTH || data.y < 0 || data.y >= PHONE_HEIGHT) return
 
     const vp = vncToViewport(data.x, data.y, i)
     if (!vp) return
@@ -540,8 +545,7 @@ function handleControlCommand (data) {
 }
 
 // ★★★ sendToVNC: API控制 → VNC窗口 ★★★
-// 固定横屏分辨率 856×480，越界直接忽略
-// 不再每次刷新canvas，省性能
+// 固定横屏 856×480 → 1334×750，纯数学算viewport，不依赖canvas缓存
 function sendToVNC (winIdx, data) {
   const win = vncWindows[winIdx]
   if (!win || win.isDestroyed()) return
@@ -571,20 +575,14 @@ function sendToVNC (winIdx, data) {
 
   // ★ 越界检查：API坐标基于客户端 856×480
   if (apiX < 0 || apiX >= CLIENT_WIDTH || apiY < 0 || apiY >= CLIENT_HEIGHT) {
-    console.log(`sendToVNC: win=${winIdx} 坐标越界 apiX=${apiX} apiY=${apiY} 限制=${CLIENT_WIDTH}×${CLIENT_HEIGHT} — 已忽略`)
+    console.log(`sendToVNC: win=${winIdx} 坐标越界 api(${apiX},${apiY}) 限制=${CLIENT_WIDTH}×${CLIENT_HEIGHT} — 已忽略`)
     return
   }
 
-  // ★ 客户端坐标(856×480) → 手机实际分辨率(1334×750)
-  const vncX = Math.round(apiX * PHONE_WIDTH / CLIENT_WIDTH)
-  const vncY = Math.round(apiY * PHONE_HEIGHT / CLIENT_HEIGHT)
+  // ★ 纯数学算viewport，不需要canvas缓存
+  const vp = apiToViewport(apiX, apiY, win)
 
-  // VNC坐标 → viewport坐标
-  if (!canvasInfoCache[winIdx]) refreshCanvasInfo(win, winIdx)
-  const vp = vncToViewport(vncX, vncY, winIdx)
-  if (!vp) return
-
-  console.log(`sendToVNC: win=${winIdx} action=${action} api(${apiX},${apiY}) → vnc(${vncX},${vncY}) → vp(${vp.x},${vp.y})`)
+  console.log(`sendToVNC: win=${winIdx} action=${action} api(${apiX},${apiY}) → vp(${vp.x},${vp.y})`)
 
   if (action === 'click' || action === 'clickAll') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
