@@ -460,32 +460,94 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★ 直接通过RFB.messages.pointerEvent发送VNC协议级别事件
-  // 绕过sendInputEvent（对非焦点窗口可能无效）
-  // 复用vnc_lite.html已有的postMessage接口
+  // ★ 直接通过executeJavaScript调用RFB.messages.pointerEvent
+  // 不依赖postMessage（vnc_lite.html的message listener可能没注册或被隔离）
+  // 直接在页面上下文里查找RFB实例
   win.webContents.executeJavaScript(`
     (function() {
       var action = ${JSON.stringify(action)};
       var x = ${x || 0};
       var y = ${y || 0};
 
-      if (action === 'click' || action === 'clickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 1 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
-      } else if (action === 'rightclick' || action === 'rightclickAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 2 }, '*');
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
-      } else if (action === 'mousedown' || action === 'mousedownAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousedown', x: x, y: y, buttons: 1 }, '*');
-      } else if (action === 'mouseup' || action === 'mouseupAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mouseup', x: x, y: y, buttons: 0 }, '*');
-      } else if (action === 'mousemove' || action === 'mousemoveAll') {
-        window.postMessage({ type: 'sync-mouse-event', eventType: 'mousemove', x: x, y: y, buttons: 0 }, '*');
-      } else if (action === 'scroll' || action === 'scrollAll') {
-        window.postMessage({ type: 'sync-wheel-event', deltaY: ${deltaY || 0}, deltaX: ${deltaX || 0}, x: x, y: y }, '*');
+      // 方法1: 查找window上的rfb变量
+      var rfb = window.rfb || window.__rfb;
+
+      // 方法2: 遍历window属性找RFB实例
+      if (!rfb) {
+        for (var key in window) {
+          try {
+            if (window[key] && window[key]._sock && window[key]._display && typeof window[key].sendKey === 'function') {
+              rfb = window[key];
+              console.log('[API] found RFB instance at window.' + key);
+              break;
+            }
+          } catch(e) {}
+        }
       }
+
+      // 方法3: 通过iframe查找
+      if (!rfb) {
+        try {
+          var iframes = document.querySelectorAll('iframe');
+          for (var i = 0; i < iframes.length; i++) {
+            try {
+              var iwin = iframes[i].contentWindow;
+              if (iwin && iwin.rfb) { rfb = iwin.rfb; break; }
+            } catch(e) {}
+          }
+        } catch(e) {}
+      }
+
+      if (!rfb) {
+        console.log('[API] ERROR: RFB instance not found! screen=' + !!document.getElementById('screen'));
+        return 'NO_RFB';
+      }
+
+      var RFBClass = rfb.constructor;
+      if (!RFBClass || !RFBClass.messages || !RFBClass.messages.pointerEvent) {
+        console.log('[API] ERROR: RFB.messages.pointerEvent not found');
+        return 'NO_POINTER_EVENT';
+      }
+
+      var sock = rfb._sock;
+      var disp = rfb._display;
+      if (!sock || !disp) {
+        console.log('[API] ERROR: rfb._sock or rfb._display missing');
+        return 'NO_SOCK';
+      }
+
+      // VNC画面坐标直接用（x,y已经是VNC画面上的像素坐标）
+      var absX = disp.absX(x);
+      var absY = disp.absY(y);
+      console.log('[API] RFB found, action=' + action + ' x=' + x + ' y=' + y + ' absX=' + absX + ' absY=' + absY);
+
+      if (action === 'click' || action === 'clickAll') {
+        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 0); // left down
+        RFBClass.messages.pointerEvent(sock, absX, absY, 0);       // all up
+      } else if (action === 'rightclick' || action === 'rightclickAll') {
+        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 2); // right down
+        RFBClass.messages.pointerEvent(sock, absX, absY, 0);       // all up
+      } else if (action === 'mousedown' || action === 'mousedownAll') {
+        RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 0);
+      } else if (action === 'mouseup' || action === 'mouseupAll') {
+        RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+      } else if (action === 'mousemove' || action === 'mousemoveAll') {
+        RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+      } else if (action === 'scroll' || action === 'scrollAll') {
+        var dy = ${deltaY || 0};
+        if (dy < 0) {
+          RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 3);
+          RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+        } else if (dy > 0) {
+          RFBClass.messages.pointerEvent(sock, absX, absY, 1 << 4);
+          RFBClass.messages.pointerEvent(sock, absX, absY, 0);
+        }
+      }
+      return 'OK';
     })()
-  `).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
+  `).then(result => {
+    console.log('sendToVNC result: win=' + winIdx + ' ' + result)
+  }).catch(e => { console.log('sendToVNC error: win=' + winIdx + ' ' + e.message) })
 }
 
 // ========== 创建VNC窗口 ==========
