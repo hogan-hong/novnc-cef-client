@@ -249,8 +249,8 @@ function forwardWheelEvent (sourceIdx, data) {
     win.webContents.sendInputEvent({
       type: 'mouseWheel',
       x: vp.x, y: vp.y,
-      deltaX: data.deltaX,
-      deltaY: data.deltaY,
+      deltaX: -data.deltaX,   // 反转滚轮方向，匹配主控窗口
+      deltaY: -data.deltaY,   // 反转滚轮方向，匹配主控窗口
       canScroll: true
     })
   })
@@ -494,19 +494,11 @@ function createVNCWindows (config, groupIndex) {
             }, true);
           });
 
-          // 右键菜单拦截
+          // 右键菜单拦截 — 只阻止浏览器右键菜单，不同步事件
+          // 右键的mousedown/mouseup已经被上面的事件监听捕获了，这里再发会导致右键重复
           screen.addEventListener('contextmenu', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            var canvas = screen.querySelector('canvas');
-            if (!canvas) return;
-            var rect = canvas.getBoundingClientRect();
-            var scaleX = canvas.width / rect.width;
-            var scaleY = canvas.height / rect.height;
-            var realX = Math.round((e.clientX - rect.left) * scaleX);
-            var realY = Math.round((e.clientY - rect.top) * scaleY);
-            sendSync({ type: 'sync-mouse', eventType: 'mousedown', x: realX, y: realY, buttons: 2, button: 2 });
-            sendSync({ type: 'sync-mouse', eventType: 'mouseup', x: realX, y: realY, buttons: 0, button: 2 });
           }, true);
 
           // 滚轮事件
