@@ -538,6 +538,7 @@ function sendToVNC (winIdx, data) {
     const toY = data.toY != null ? data.toY : fromY
     const duration = data.duration || 300  // 默认300ms
     const mode = data.mode || 'uniform'    // 'uniform' 匀速 | 'ease' 模拟拖动（先加速后减速）
+    const hold = data.hold || 0            // 到达终点后保持按住的时间(ms)，0=立即松开
 
     // 越界检查：起点和终点都基于 856×480
     if (fromX < 0 || fromX >= CLIENT_WIDTH || fromY < 0 || fromY >= CLIENT_HEIGHT) return
@@ -571,12 +572,11 @@ function sendToVNC (winIdx, data) {
       }, delay)
     }
 
-    // 抬起终点
+    // 抬起终点（拖动结束后 hold 毫秒再松开）
     setTimeout(() => {
       if (win.isDestroyed()) return
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: vpTo.x, y: vpTo.y })
       win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
-    }, duration)
+    }, duration + hold)
     return
   }
 
