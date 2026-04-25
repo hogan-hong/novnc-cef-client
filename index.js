@@ -864,14 +864,12 @@ const OVERVIEW_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>NoVNC 屏幕墙</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#111;color:#eee;font-family:"Microsoft YaHei",sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column}
-h1{text-align:center;font-size:16px;padding:6px 0;background:#1a1a2e;color:#e94560;flex-shrink:0}
-#grid{flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;overflow:hidden;padding:2px}
-.cell{position:relative;background:#000;border:1px solid #333;display:flex;align-items:center;justify-content:center;overflow:hidden}
+body{background:#000;color:#eee;font-family:"Microsoft YaHei",sans-serif;overflow:hidden;height:100vh;width:100vw}
+#grid{width:100%;height:100%;display:flex;flex-wrap:wrap;align-content:flex-start}
+.cell{position:relative;background:#000;border:none;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .cell img{width:100%;height:100%;object-fit:contain}
 .cell .label{position:absolute;top:2px;left:4px;font-size:11px;background:rgba(0,0,0,0.7);padding:1px 5px;border-radius:3px;color:#aaa}
 </style></head><body>
-<h1>NoVNC 屏幕墙</h1>
 <div id="grid"></div>
 <script>
 // 自动扫描 38981-38989 端口，连接所有已启动的客户端
@@ -890,8 +888,7 @@ function getLocalIP() {
 function layoutGrid() {
   const total = Object.keys(cells).length
   if (total === 0) return
-  const gW = window.innerWidth, gH = window.innerHeight - 30
-  // 每组5列
+  const gW = window.innerWidth, gH = window.innerHeight
   const cols = 5
   const rows = Math.ceil(total / cols)
   const cellW = Math.floor(gW / cols)
