@@ -625,14 +625,13 @@ function createVNCWindows (config, groupIndex) {
   const offsetX = Math.floor((workArea.width - cols * winW) / 2)
   const apiPort = 38980 + groupIndex
 
-  // ★ 逐个创建窗口，等上一个加载完再创建下一个
-  function createNextWindow(i) {
-    if (i >= groupItems.length) {
-      createControlButtons(vncWindows[0] || null)
-      if (!apiServer) startAPIServer(groupIndex)
-      return
-    }
-    const item = groupItems[i]
+  // ★ 读取命令行参数 --delay=毫秒，设置窗口创建间隔，默认0(同时创建)
+  // 用法: novnc-cef-client.exe --delay=1500
+  const delayArg = process.argv.find(a => a.startsWith('--delay='))
+  const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
+  console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
+
+  function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
 
@@ -663,14 +662,6 @@ function createVNCWindows (config, groupIndex) {
         code: input.code
       })
     })
-
-    let nextCalled = false
-    function callNext() {
-      if (nextCalled) return
-      nextCalled = true
-      // ★ 固定间隔1.5秒后再创建下一个窗口
-      setTimeout(() => createNextWindow(i + 1), 1500)
-    }
 
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => setLayer2Title(win, item), 500)
@@ -741,19 +732,42 @@ function createVNCWindows (config, groupIndex) {
           console.log('[novnc-sync] capture injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
-
-      callNext()
     })
-
-    // 超时保护：8秒还没did-finish-load就继续下一个
-    setTimeout(callNext, 8000)
 
     win.on('resize', () => refreshCanvasInfo(win, i))
     win.loadURL(item.url)
     vncWindows.push(win)
+    return win
   }
 
-  createNextWindow(0)
+  if (windowDelay > 0) {
+    // ★ 有间隔：逐个创建，每个间隔 windowDelay 毫秒
+    function createNextWindow(i) {
+      if (i >= groupItems.length) {
+        createControlButtons(vncWindows[0] || null)
+        if (!apiServer) startAPIServer(groupIndex)
+        return
+      }
+      createOneWindow(groupItems[i], i)
+      if (i === groupItems.length - 1) {
+        // 最后一个窗口创建完后，等间隔再初始化控制按钮
+        setTimeout(() => {
+          createControlButtons(vncWindows[0] || null)
+          if (!apiServer) startAPIServer(groupIndex)
+        }, windowDelay)
+      } else {
+        setTimeout(() => createNextWindow(i + 1), windowDelay)
+      }
+    }
+    createNextWindow(0)
+  } else {
+    // ★ 无间隔：同时创建所有窗口
+    groupItems.forEach((item, i) => {
+      createOneWindow(item, i)
+    })
+    createControlButtons(vncWindows[0] || null)
+    if (!apiServer) startAPIServer(groupIndex)
+  }
 }
 
 // ========== 主流程 ==========
