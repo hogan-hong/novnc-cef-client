@@ -25,6 +25,8 @@ app.commandLine.appendSwitch('enable-gpu')
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
+// ★ 强制DPI为1，避免高DPI屏幕下Canvas渲染4倍像素量
+app.commandLine.appendSwitch('force-device-scale-factor', '1')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
