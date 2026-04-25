@@ -707,6 +707,7 @@ function createVNCWindows (config, groupIndex) {
           if (!screen) return;
           var API_URL = 'http://127.0.0.1:${apiPort}/sync';
           var WIN_IDX = ${i};
+          var _lastMoveSync = 0;
 
           function sendSync(data) {
             data.sourceIndex = WIN_IDX;
@@ -720,7 +721,7 @@ function createVNCWindows (config, groupIndex) {
           }
 
           // 鼠标事件：capture 阶段监听 #screen
-          ['mousedown', 'mouseup', 'mousemove'].forEach(function(et) {
+          ['mousedown', 'mouseup'].forEach(function(et) {
             screen.addEventListener(et, function(e) {
               var canvas = screen.querySelector('canvas');
               if (!canvas) return;
@@ -739,6 +740,27 @@ function createVNCWindows (config, groupIndex) {
               });
             }, true);
           });
+          // mousemove 节流：30ms一次，避免CPU过高
+          screen.addEventListener('mousemove', function(e) {
+            var now = Date.now();
+            if (now - _lastMoveSync < 30) return;
+            _lastMoveSync = now;
+            var canvas = screen.querySelector('canvas');
+            if (!canvas) return;
+            var rect = canvas.getBoundingClientRect();
+            var scaleX = canvas.width / rect.width;
+            var scaleY = canvas.height / rect.height;
+            var realX = Math.round((e.clientX - rect.left) * scaleX);
+            var realY = Math.round((e.clientY - rect.top) * scaleY);
+            sendSync({
+              type: 'sync-mouse',
+              eventType: 'mousemove',
+              x: realX,
+              y: realY,
+              buttons: e.buttons,
+              button: e.button
+            });
+          }, true);
 
           // 右键菜单拦截
           screen.addEventListener('contextmenu', function(e) {
