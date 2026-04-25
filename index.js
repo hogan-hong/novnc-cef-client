@@ -797,18 +797,24 @@ function createVNCWindows (config, groupIndex) {
   }
 }
 
-// ========== 屏幕墙服务 (端口38988，只有第一个客户端启动) ==========
+// ========== 屏幕墙服务 (端口38988，自动接管) ==========
 let overviewServer = null
+let overviewCheckTimer = null
 
 function startOverviewServer () {
   const OVERVIEW_PORT = 38988
-  // 检测端口是否已被其他客户端占用
+  tryBindOverview(OVERVIEW_PORT)
+  // ★ 心跳检测：每3秒检测38988是否存活，挂了就接管
+  startOverviewWatchdog(OVERVIEW_PORT)
+}
+
+function tryBindOverview (port) {
   const testServer = require('net').createServer()
   testServer.on('error', () => {
-    console.log(`[屏幕墙] 端口 ${OVERVIEW_PORT} 已被占用，跳过启动`)
+    // 端口被占用，说明已有其他客户端在当屏幕墙主程序
     testServer.close()
   })
-  testServer.listen(OVERVIEW_PORT, '0.0.0.0', () => {
+  testServer.listen(port, '0.0.0.0', () => {
     testServer.close(() => {
       // 端口空闲，启动屏幕墙
       overviewServer = http.createServer((req, res) => {
@@ -819,11 +825,39 @@ function startOverviewServer () {
           res.writeHead(404); res.end()
         }
       })
-      overviewServer.listen(OVERVIEW_PORT, '0.0.0.0', () => {
-        console.log(`[屏幕墙] 启动成功: http://0.0.0.0:${OVERVIEW_PORT}/overview`)
+      overviewServer.listen(port, '0.0.0.0', () => {
+        console.log(`[屏幕墙] 启动成功: http://0.0.0.0:${port}/overview`)
+      })
+      overviewServer.on('error', () => {
+        // bind失败，被其他客户端抢先了
+        overviewServer = null
       })
     })
   })
+}
+
+function startOverviewWatchdog (port) {
+  if (overviewCheckTimer) clearInterval(overviewCheckTimer)
+  overviewCheckTimer = setInterval(() => {
+    // 如果自己就是屏幕墙主程序，不需要检测
+    if (overviewServer) return
+    // 检测38988是否存活
+    const socket = new (require('net').Socket)()
+    socket.setTimeout(1500)
+    socket.on('connect', () => {
+      // 端口还活着，不需要接管
+      socket.destroy()
+    })
+    socket.on('error', () => {
+      // 连不上，可能主程序挂了，尝试接管
+      socket.destroy()
+      tryBindOverview(port)
+    })
+    socket.on('timeout', () => {
+      socket.destroy()
+    })
+    socket.connect(port, '127.0.0.1')
+  }, 3000)
 }
 
 const OVERVIEW_HTML = `<!DOCTYPE html>
