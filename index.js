@@ -486,7 +486,7 @@ function startAPIServer (groupIndex) {
     }
     res.writeHead(404); res.end('Not Found')
   })
-  server.listen(port, '127.0.0.1', () => console.log(`API + Sync on http://127.0.0.1:${port}`))
+  server.listen(port, '0.0.0.0', () => console.log(`API + Sync on http://0.0.0.0:${port}`))
   apiServer = server
 }
 
