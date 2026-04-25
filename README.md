@@ -143,7 +143,12 @@ curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":400
 curl -X POST http://127.0.0.1:38981 -d '{"action":"scroll","x":428,"y":240,"deltaY":-3,"windowIndex":0}'
 
 # 所有窗口按键回车
-curl -X POST http://127.0.0.1:38981 -d '{"action":"keypressAll","code":"Enter","down":true}'
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypressAll","code":"Enter"}'
+
+# 窗口0长按W键2秒（手动控制按下/抬起）
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":true,"windowIndex":0}'
+sleep 2
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":false,"windowIndex":0}'
 
 # 窗口0粘贴文本
 curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","windowIndex":0}'

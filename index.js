@@ -525,8 +525,18 @@ function sendToVNC (winIdx, data) {
 
   // 键盘走sendInputEvent
   if (action === 'keypress' || action === 'keypressAll') {
-    const isDown = down !== false
-    win.webContents.sendInputEvent({ type: isDown ? 'keyDown' : 'keyUp', keyCode: code || '', code: code || '' })
+    const keyCode = code || ''
+    if (down === true) {
+      // 显式传 down=true → 只发按下
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode, code: keyCode })
+    } else if (down === false) {
+      // 显式传 down=false → 只发抬起
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode, code: keyCode })
+    } else {
+      // 不传 down → 完整按一下（按下+抬起）
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode, code: keyCode })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode, code: keyCode })
+    }
     return
   }
 
