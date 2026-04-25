@@ -625,7 +625,14 @@ function createVNCWindows (config, groupIndex) {
   const offsetX = Math.floor((workArea.width - cols * winW) / 2)
   const apiPort = 38980 + groupIndex
 
-  groupItems.forEach((item, i) => {
+  // ★ 逐个创建窗口，等上一个加载完再创建下一个
+  function createNextWindow(i) {
+    if (i >= groupItems.length) {
+      createControlButtons(vncWindows[0] || null)
+      if (!apiServer) startAPIServer(groupIndex)
+      return
+    }
+    const item = groupItems[i]
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
 
@@ -726,15 +733,24 @@ function createVNCWindows (config, groupIndex) {
           console.log('[novnc-sync] capture injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
+
+      // ★ 等VNC连接建立后再创建下一个窗口
+      setTimeout(() => createNextWindow(i + 1), 1000)
     })
+
+    // 超时保护：5秒还没did-finish-load就继续下一个
+    const timeoutId = setTimeout(() => {
+      if (vncWindows.indexOf(win) !== -1) return // 已经加载完了
+      createNextWindow(i + 1)
+    }, 5000)
+    win.webContents.once('did-finish-load', () => clearTimeout(timeoutId))
 
     win.on('resize', () => refreshCanvasInfo(win, i))
     win.loadURL(item.url)
     vncWindows.push(win)
-  })
+  }
 
-  createControlButtons(vncWindows[0] || null)
-  if (!apiServer) startAPIServer(groupIndex)
+  createNextWindow(0)
 }
 
 // ========== 主流程 ==========
