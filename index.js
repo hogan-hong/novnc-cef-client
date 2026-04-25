@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { execFile } = require('child_process')
 const http = require('http')
+const WebSocket = require('ws')
 
 // ========== 日志写入同目录Log.txt ==========
 const logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
@@ -486,8 +487,34 @@ function startAPIServer (groupIndex) {
     }
     res.writeHead(404); res.end('Not Found')
   })
-  server.listen(port, '0.0.0.0', () => console.log(`API + Sync on http://0.0.0.0:${port}`))
+  // ★ WebSocket 截图推流
+  const wss = new WebSocket.Server({ server })
+  wss.on('connection', (ws) => {
+    console.log(`[Overview WS] 客户端连接到端口 ${port}`)
+    let running = true
+    const interval = setInterval(async () => {
+      if (!running || ws.readyState !== WebSocket.OPEN) { clearInterval(interval); return }
+      try {
+        for (let i = 0; i < vncWindows.length; i++) {
+          const win = vncWindows[i]
+          if (!win || win.isDestroyed()) continue
+          const img = await win.webContents.capturePage()
+          const buf = img.toJPEG(70)
+          if (ws.readyState !== WebSocket.OPEN) break
+          ws.send(JSON.stringify({ type: 'frame', index: i, group: groupIndex, title: win.getTitle() }))
+          ws.send(buf)
+        }
+      } catch (e) {}
+    }, 200) // 5fps
+    ws.on('close', () => { running = false; clearInterval(interval); console.log(`[Overview WS] 客户端断开端口 ${port}`) })
+    ws.on('error', () => { running = false; clearInterval(interval) })
+  })
+
+  server.listen(port, '0.0.0.0', () => console.log(`API + Sync + WS on http://0.0.0.0:${port}`))
   apiServer = server
+
+  // ★ 尝试启动屏幕墙服务 (端口38988，只有第一个客户端会成功)
+  startOverviewServer()
 }
 
 // ========== HTTP API: 外部控制命令 ==========
@@ -770,7 +797,142 @@ function createVNCWindows (config, groupIndex) {
   }
 }
 
-// ========== 主流程 ==========
+// ========== 屏幕墙服务 (端口38988，只有第一个客户端启动) ==========
+let overviewServer = null
+
+function startOverviewServer () {
+  const OVERVIEW_PORT = 38988
+  // 检测端口是否已被其他客户端占用
+  const testServer = require('net').createServer()
+  testServer.on('error', () => {
+    console.log(`[屏幕墙] 端口 ${OVERVIEW_PORT} 已被占用，跳过启动`)
+    testServer.close()
+  })
+  testServer.listen(OVERVIEW_PORT, '0.0.0.0', () => {
+    testServer.close(() => {
+      // 端口空闲，启动屏幕墙
+      overviewServer = http.createServer((req, res) => {
+        if (req.url === '/' || req.url === '/overview') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(OVERVIEW_HTML)
+        } else {
+          res.writeHead(404); res.end()
+        }
+      })
+      overviewServer.listen(OVERVIEW_PORT, '0.0.0.0', () => {
+        console.log(`[屏幕墙] 启动成功: http://0.0.0.0:${OVERVIEW_PORT}/overview`)
+      })
+    })
+  })
+}
+
+const OVERVIEW_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>NoVNC 屏幕墙</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#eee;font-family:"Microsoft YaHei",sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+h1{text-align:center;font-size:16px;padding:6px 0;background:#1a1a2e;color:#e94560;flex-shrink:0}
+#grid{flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;overflow:hidden;padding:2px}
+.cell{position:relative;background:#000;border:1px solid #333;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.cell img{width:100%;height:100%;object-fit:contain}
+.cell .label{position:absolute;top:2px;left:4px;font-size:11px;background:rgba(0,0,0,0.7);padding:1px 5px;border-radius:3px;color:#aaa}
+</style></head><body>
+<h1>NoVNC 屏幕墙</h1>
+<div id="grid"></div>
+<script>
+// 自动扫描 38981-38989 端口，连接所有已启动的客户端
+const BASE_PORT = 38981
+const MAX_PORT = 38989
+const cells = {}  // port_index -> DOM
+const wsConns = {} // port -> ws
+const grid = document.getElementById('grid')
+
+function getLocalIP() {
+  // 从浏览器地址栏获取IP
+  const h = location.hostname
+  return h === 'localhost' || h === '127.0.0.1' ? '127.0.0.1' : h
+}
+
+function layoutGrid() {
+  const total = Object.keys(cells).length
+  if (total === 0) return
+  const gW = window.innerWidth, gH = window.innerHeight - 30
+  // 每组5列
+  const cols = 5
+  const rows = Math.ceil(total / cols)
+  const cellW = Math.floor(gW / cols)
+  const cellH = Math.floor(gH / rows)
+  // 按组排列
+  const sorted = Object.keys(cells).sort((a, b) => {
+    const [pa, ia] = a.split('_').map(Number)
+    const [pb, ib] = b.split('_').map(Number)
+    return pa !== pb ? pa - pb : ia - ib
+  })
+  sorted.forEach((key, idx) => {
+    const cell = cells[key]
+    cell.style.width = cellW + 'px'
+    cell.style.height = cellH + 'px'
+    cell.style.order = idx
+  })
+}
+
+function connectWS(port) {
+  if (wsConns[port]) return
+  const ip = getLocalIP()
+  const ws = new WebSocket('ws://' + ip + ':' + port)
+  wsConns[port] = ws
+  let pendingInfo = null
+  ws.onopen = () => console.log('WS connected:', port)
+  ws.onmessage = (evt) => {
+    if (typeof evt.data === 'string') {
+      // 控制消息: {type:'frame', index, group, title}
+      pendingInfo = JSON.parse(evt.data)
+      const key = pendingInfo.group + '_' + pendingInfo.index
+      if (!cells[key]) {
+        const cell = document.createElement('div')
+        cell.className = 'cell'
+        const img = document.createElement('img')
+        img.src = ''
+        cell.appendChild(img)
+        const label = document.createElement('div')
+        label.className = 'label'
+        label.textContent = pendingInfo.title || key
+        cell.appendChild(label)
+        cells[key] = cell
+        grid.appendChild(cell)
+        layoutGrid()
+      }
+    } else {
+      // 二进制帧数据 (JPEG)
+      if (!pendingInfo) return
+      const key = pendingInfo.group + '_' + pendingInfo.index
+      const cell = cells[key]
+      if (cell) {
+        const blob = new Blob([evt.data], {type: 'image/jpeg'})
+        const url = URL.createObjectURL(blob)
+        const img = cell.querySelector('img')
+        const oldUrl = img.src
+        img.src = url
+        if (oldUrl && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl)
+        // 更新标题
+        const label = cell.querySelector('.label')
+        if (label && pendingInfo.title) label.textContent = pendingInfo.title
+      }
+      pendingInfo = null
+    }
+  }
+  ws.onclose = () => { console.log('WS closed:', port); delete wsConns[port]; setTimeout(() => connectWS(port), 3000) }
+  ws.onerror = () => {}
+}
+
+// 扫描所有可能的客户端端口
+for (let p = BASE_PORT; p <= MAX_PORT; p++) {
+  connectWS(p)
+}
+
+window.addEventListener('resize', layoutGrid)
+</script></body></html>`
+
 app.whenReady().then(() => {
   const config = readConfig()
   if (!config) { app.quit(); return }
@@ -798,6 +960,7 @@ ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
   if (exitWindow) { try { exitWindow.destroy() } catch (e) {} exitWindow = null }
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
+  if (overviewServer) { try { overviewServer.close() } catch (e) {} overviewServer = null }
   app.quit(); process.exit(0)
 })
 app.on('window-all-closed', () => {})
