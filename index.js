@@ -530,6 +530,56 @@ function sendToVNC (winIdx, data) {
     return
   }
 
+  // ★★★ 拖动事件 ★★★
+  if (action === 'drag' || action === 'dragAll') {
+    const fromX = data.fromX != null ? data.fromX : 0
+    const fromY = data.fromY != null ? data.fromY : 0
+    const toX = data.toX != null ? data.toX : fromX
+    const toY = data.toY != null ? data.toY : fromY
+    const duration = data.duration || 300  // 默认300ms
+    const mode = data.mode || 'uniform'    // 'uniform' 匀速 | 'ease' 模拟拖动（先加速后减速）
+
+    // 越界检查：起点和终点都基于 856×480
+    if (fromX < 0 || fromX >= CLIENT_WIDTH || fromY < 0 || fromY >= CLIENT_HEIGHT) return
+    if (toX < 0 || toX >= CLIENT_WIDTH || toY < 0 || toY >= CLIENT_HEIGHT) return
+
+    const vpFrom = apiToViewport(fromX, fromY, win)
+    const vpTo = apiToViewport(toX, toY, win)
+
+    // 计算步数：至少2步（起终），最多100步，间隔约16ms（60fps）
+    const steps = Math.max(2, Math.min(100, Math.round(duration / 16)))
+    const stepTime = duration / steps
+
+    // easeInOut 缓动函数：t ∈ [0,1] → [0,1]
+    function easeInOut (t) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+    }
+
+    // 按下起点
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
+
+    // 中间移动步
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps
+      const et = mode === 'ease' ? easeInOut(t) : t  // ease模式用缓动，否则匀速
+      const curX = Math.round(vpFrom.x + (vpTo.x - vpFrom.x) * et)
+      const curY = Math.round(vpFrom.y + (vpTo.y - vpFrom.y) * et)
+      const delay = Math.round(stepTime * i)
+      setTimeout(() => {
+        if (win.isDestroyed()) return
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
+      }, delay)
+    }
+
+    // 抬起终点
+    setTimeout(() => {
+      if (win.isDestroyed()) return
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: vpTo.x, y: vpTo.y })
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
+    }, duration)
+    return
+  }
+
   // ★★★ 鼠标/滚动事件 ★★★
   const apiX = x || 0
   const apiY = y || 0
@@ -546,12 +596,6 @@ function sendToVNC (winIdx, data) {
   } else if (action === 'rightclick' || action === 'rightclickAll') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
-  } else if (action === 'mousedown' || action === 'mousedownAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-  } else if (action === 'mouseup' || action === 'mouseupAll') {
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-  } else if (action === 'mousemove' || action === 'mousemoveAll') {
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: vp.x, y: vp.y })
   } else if (action === 'scroll' || action === 'scrollAll') {
     win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
   }
