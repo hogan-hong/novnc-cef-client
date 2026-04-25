@@ -664,6 +664,14 @@ function createVNCWindows (config, groupIndex) {
       })
     })
 
+    let nextCalled = false
+    function callNext() {
+      if (nextCalled) return
+      nextCalled = true
+      // ★ 等VNC连接建立后再创建下一个窗口
+      setTimeout(() => createNextWindow(i + 1), 1000)
+    }
+
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => setLayer2Title(win, item), 500)
 
@@ -734,16 +742,11 @@ function createVNCWindows (config, groupIndex) {
         })()
       `).catch(() => {})
 
-      // ★ 等VNC连接建立后再创建下一个窗口
-      setTimeout(() => createNextWindow(i + 1), 1000)
+      callNext()
     })
 
-    // 超时保护：5秒还没did-finish-load就继续下一个
-    const timeoutId = setTimeout(() => {
-      if (vncWindows.indexOf(win) !== -1) return // 已经加载完了
-      createNextWindow(i + 1)
-    }, 5000)
-    win.webContents.once('did-finish-load', () => clearTimeout(timeoutId))
+    // 超时保护：8秒还没did-finish-load就继续下一个
+    setTimeout(callNext, 8000)
 
     win.on('resize', () => refreshCanvasInfo(win, i))
     win.loadURL(item.url)
