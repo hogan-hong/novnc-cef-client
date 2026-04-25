@@ -668,8 +668,8 @@ function createVNCWindows (config, groupIndex) {
     function callNext() {
       if (nextCalled) return
       nextCalled = true
-      // ★ 等VNC连接建立后再创建下一个窗口
-      setTimeout(() => createNextWindow(i + 1), 1000)
+      // ★ 固定间隔1.5秒后再创建下一个窗口
+      setTimeout(() => createNextWindow(i + 1), 1500)
     }
 
     win.webContents.on('did-finish-load', () => {
