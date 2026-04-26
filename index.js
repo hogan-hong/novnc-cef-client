@@ -29,6 +29,9 @@ app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('force-device-scale-factor', '1')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
+// ★ 关闭音频服务，VNC不需要声音，省一个Utility进程
+app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess')
+app.commandLine.appendSwitch('mute-audio')
 
 // ========== 全局状态 ==========
 let syncEnabled = false
@@ -163,6 +166,93 @@ function createControlButtons (parentWin) {
 }
 
 // ========== 主控按钮：在每个VNC窗口内注入/移除 ==========
+// ★★★ 同步事件捕获注入（按需注入，关闭同步时移除）★★★
+function injectSyncCapture () {
+  const apiPort = 38980 + currentGroupIndex
+  vncWindows.forEach((win, i) => {
+    if (!win || win.isDestroyed()) return
+    win.webContents.executeJavaScript(`
+      (function() {
+        if (window.__novnc_sync_injected) return;
+        window.__novnc_sync_injected = true;
+        var screen = document.getElementById('screen');
+        if (!screen) return;
+        var API_URL = 'http://127.0.0.1:${apiPort}/sync';
+        var WIN_IDX = ${i};
+        var _lastMoveSync = 0;
+        window.__novnc_sync_handlers = [];
+
+        function sendSync(data) {
+          data.sourceIndex = WIN_IDX;
+          try {
+            fetch(API_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(data)
+            }).catch(function(){});
+          } catch(e) {}
+        }
+
+        function addSyncListener(target, et, fn, capture) {
+          target.addEventListener(et, fn, capture);
+          window.__novnc_sync_handlers.push({target:target, et:et, fn:fn, capture:capture});
+        }
+
+        // 鼠标按下/抬起
+        ['mousedown', 'mouseup'].forEach(function(et) {
+          addSyncListener(screen, et, function(e) {
+            var canvas = screen.querySelector('canvas');
+            if (!canvas) return;
+            var rect = canvas.getBoundingClientRect();
+            var realX = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+            var realY = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+            sendSync({type:'sync-mouse', eventType:et, x:realX, y:realY, buttons:e.buttons, button:e.button});
+          }, true);
+        });
+        // mousemove 节流30ms
+        addSyncListener(screen, 'mousemove', function(e) {
+          var now = Date.now();
+          if (now - _lastMoveSync < 30) return;
+          _lastMoveSync = now;
+          var canvas = screen.querySelector('canvas');
+          if (!canvas) return;
+          var rect = canvas.getBoundingClientRect();
+          var realX = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+          var realY = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+          sendSync({type:'sync-mouse', eventType:'mousemove', x:realX, y:realY, buttons:e.buttons, button:e.button});
+        }, true);
+        // 滚轮
+        addSyncListener(document, 'wheel', function(e) {
+          var canvas = screen.querySelector('canvas');
+          if (!canvas) return;
+          var rect = canvas.getBoundingClientRect();
+          var realX = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+          var realY = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+          sendSync({type:'sync-wheel', deltaY:e.deltaY, deltaX:e.deltaX, x:realX, y:realY});
+        }, true);
+      })()
+    `).catch(() => {})
+  })
+}
+
+function removeSyncCapture () {
+  vncWindows.forEach((win) => {
+    if (!win || win.isDestroyed()) return
+    win.webContents.executeJavaScript(`
+      (function() {
+        if (!window.__novnc_sync_injected) return;
+        window.__novnc_sync_injected = false;
+        if (window.__novnc_sync_handlers) {
+          window.__novnc_sync_handlers.forEach(function(h) {
+            h.target.removeEventListener(h.et, h.fn, h.capture);
+          });
+          window.__novnc_sync_handlers = null;
+        }
+      })()
+    `).catch(() => {})
+  })
+}
+
 function injectMasterButtons () {
   vncWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
@@ -700,87 +790,15 @@ function createVNCWindows (config, groupIndex) {
       setTimeout(() => refreshCanvasInfo(win, i), 2000)
       setTimeout(() => refreshCanvasInfo(win, i), 5000)
 
-      // ★ 注入同步事件捕获代码
+      // ★ 只保留右键菜单拦截（轻量），同步捕获代码在开启同步时才注入
       win.webContents.executeJavaScript(`
         (function() {
           var screen = document.getElementById('screen');
           if (!screen) return;
-          var API_URL = 'http://127.0.0.1:${apiPort}/sync';
-          var WIN_IDX = ${i};
-          var _lastMoveSync = 0;
-
-          function sendSync(data) {
-            data.sourceIndex = WIN_IDX;
-            try {
-              fetch(API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-              }).catch(function(){});
-            } catch(e) {}
-          }
-
-          // 鼠标事件：capture 阶段监听 #screen
-          ['mousedown', 'mouseup'].forEach(function(et) {
-            screen.addEventListener(et, function(e) {
-              var canvas = screen.querySelector('canvas');
-              if (!canvas) return;
-              var rect = canvas.getBoundingClientRect();
-              var scaleX = canvas.width / rect.width;
-              var scaleY = canvas.height / rect.height;
-              var realX = Math.round((e.clientX - rect.left) * scaleX);
-              var realY = Math.round((e.clientY - rect.top) * scaleY);
-              sendSync({
-                type: 'sync-mouse',
-                eventType: et,
-                x: realX,
-                y: realY,
-                buttons: e.buttons,
-                button: e.button
-              });
-            }, true);
-          });
-          // mousemove 节流：30ms一次，避免CPU过高
-          screen.addEventListener('mousemove', function(e) {
-            var now = Date.now();
-            if (now - _lastMoveSync < 30) return;
-            _lastMoveSync = now;
-            var canvas = screen.querySelector('canvas');
-            if (!canvas) return;
-            var rect = canvas.getBoundingClientRect();
-            var scaleX = canvas.width / rect.width;
-            var scaleY = canvas.height / rect.height;
-            var realX = Math.round((e.clientX - rect.left) * scaleX);
-            var realY = Math.round((e.clientY - rect.top) * scaleY);
-            sendSync({
-              type: 'sync-mouse',
-              eventType: 'mousemove',
-              x: realX,
-              y: realY,
-              buttons: e.buttons,
-              button: e.button
-            });
-          }, true);
-
-          // 右键菜单拦截
           screen.addEventListener('contextmenu', function(e) {
             e.preventDefault();
             e.stopPropagation();
           }, true);
-
-          // 滚轮事件
-          document.addEventListener('wheel', function(e) {
-            var canvas = screen.querySelector('canvas');
-            if (!canvas) return;
-            var rect = canvas.getBoundingClientRect();
-            var scaleX = canvas.width / rect.width;
-            var scaleY = canvas.height / rect.height;
-            var realX = Math.round((e.clientX - rect.left) * scaleX);
-            var realY = Math.round((e.clientY - rect.top) * scaleY);
-            sendSync({ type: 'sync-wheel', deltaY: e.deltaY, deltaX: e.deltaX, x: realX, y: realY });
-          }, true);
-
-          console.log('[novnc-sync] capture injected, window=' + WIN_IDX);
         })()
       `).catch(() => {})
     })
@@ -1002,11 +1020,13 @@ ipcMain.on('toggle-sync', (event, enabled) => {
   syncEnabled = enabled
   if (enabled) {
     vncWindows.forEach((w, i) => refreshCanvasInfo(w, i))
+    injectSyncCapture()
     setTimeout(() => {
       injectMasterButtons()
       updateMasterButtons()
     }, 300)
   } else {
+    removeSyncCapture()
     removeMasterButtons()
   }
   console.log(`Sync ${enabled ? 'ON' : 'OFF'}`)
