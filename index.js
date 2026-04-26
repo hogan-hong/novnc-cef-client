@@ -5,13 +5,26 @@ const { execFile } = require('child_process')
 const http = require('http')
 const WebSocket = require('ws')
 
-// ========== 日志写入同目录Log.txt ==========
+// ========== 日志写入同目录Log.txt（异步缓冲，避免磁盘IO阻塞）==========
 const logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
 const origLog = console.log
 const origErr = console.error
+let _logBuffer = []
+let _logFlushTimer = null
 function writeLog (msg) {
   const line = `[${new Date().toLocaleString('zh-CN', {hour12:false})}] ${msg}\n`
-  try { fs.appendFileSync(logPath, line, 'utf-8') } catch (e) {}
+  _logBuffer.push(line)
+  // 缓冲区满100条或首次立即刷，其他攒着3秒一刷
+  if (_logBuffer.length >= 100) flushLog()
+  else if (!_logFlushTimer) _logFlushTimer = setTimeout(flushLog, 3000)
+}
+function flushLog () {
+  if (_logFlushTimer) { clearTimeout(_logFlushTimer); _logFlushTimer = null }
+  if (_logBuffer.length === 0) return
+  const data = _logBuffer.join('')
+  _logBuffer = []
+  // 异步写磁盘，不阻塞
+  fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, () => {})
 }
 console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
 console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
