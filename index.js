@@ -623,8 +623,28 @@ function startAPIServer (groupIndex) {
 }
 
 // ========== HTTP API: 外部控制命令 ==========
-// ★ 每个窗口的拖动 Promise，click 等操作执行前先等它完成
-const _dragPromises = {}
+// ★ 每个窗口的拖动状态：{ timers: number[], resolved: boolean, resolve: Function }
+// click 来了就立刻 cancelDrag 中断所有 timer 并释放左键，不等 setTimeout
+const _dragState = {}
+
+// ★ 中断指定窗口的拖动：取消所有未触发的 timer，发 mouseUp 释放左键
+function cancelDrag (winIdx) {
+  const state = _dragState[winIdx]
+  if (!state) return
+  // 取消所有未触发的 setTimeout
+  state.timers.forEach(t => clearTimeout(t))
+  state.timers.length = 0
+  if (!state.resolved) {
+    state.resolved = true
+    const win = vncWindows[winIdx]
+    if (win && !win.isDestroyed()) {
+      // 立即发 mouseUp 释放左键，确保 Electron 按钮状态干净
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: 0, y: 0, button: 'left', clickCount: 1 })
+    }
+    if (state.resolve) state.resolve()
+  }
+  delete _dragState[winIdx]
+}
 
 async function handleControlCommand (data) {
   const { action } = data
@@ -701,36 +721,38 @@ function sendToVNC (winIdx, data) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
     }
 
-    // ★ drag 立即返回HTTP，但记录 Promise，click 等操作会等它完成
-    const dragPromise = new Promise((resolve) => {
-      // 按下起点
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
+    // ★ 先取消该窗口之前未完成的 drag（如果连续发 drag）
+    cancelDrag(winIdx)
 
-      // 中间移动步
-      for (let i = 1; i < steps; i++) {
-        const t = i / steps
-        const et = mode === 'ease' ? easeInOut(t) : t  // ease模式用缓动，否则匀速
-        const curX = Math.round(vpFrom.x + (vpTo.x - vpFrom.x) * et)
-        const curY = Math.round(vpFrom.y + (vpTo.y - vpFrom.y) * et)
-        const delay = Math.round(stepTime * i)
-        setTimeout(() => {
-          if (win.isDestroyed()) { resolve(); return }
-          win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
-        }, delay)
-      }
+    const timers = []
+    const state = { timers, resolved: false, resolve: null }
+    _dragState[winIdx] = state
 
-      // 抬起终点（拖动结束后 hold 毫秒再松开）
-      setTimeout(() => {
-        if (!win.isDestroyed()) {
-          win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
-        }
-        // 清除 drag Promise 记录
-        if (_dragPromises[winIdx] === dragPromise) delete _dragPromises[winIdx]
-        resolve()
-      }, duration + hold)
-    })
-    // ★ 记录这个窗口的 drag Promise，后续 click 会等它
-    _dragPromises[winIdx] = dragPromise
+    // 按下起点
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
+
+    // 中间移动步
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps
+      const et = mode === 'ease' ? easeInOut(t) : t  // ease模式用缓动，否则匀速
+      const curX = Math.round(vpFrom.x + (vpTo.x - vpFrom.x) * et)
+      const curY = Math.round(vpFrom.y + (vpTo.y - vpFrom.y) * et)
+      const delay = Math.round(stepTime * i)
+      timers.push(setTimeout(() => {
+        if (state.resolved || win.isDestroyed()) return
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
+      }, delay))
+    }
+
+    // 抬起终点（拖动结束后 hold 毫秒再松开）
+    timers.push(setTimeout(() => {
+      if (state.resolved || win.isDestroyed()) return
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
+      state.resolved = true
+      if (_dragState[winIdx] === state) delete _dragState[winIdx]
+      if (state.resolve) state.resolve()
+    }, duration + hold))
+
     return
   }
 
@@ -744,29 +766,15 @@ function sendToVNC (winIdx, data) {
   // ★ 纯数学算viewport，不需要canvas缓存
   const vp = apiToViewport(apiX, apiY, win)
 
-  // ★ click 等操作前先等该窗口的 drag 完成，再发 mouseUp 兜底确保按钮状态干净
-  if (action === 'click' || action === 'clickAll' || action === 'rightclick' || action === 'rightclickAll') {
-    const dragP = _dragPromises[winIdx]
-    if (dragP) {
-      dragP.then(() => {
-        if (win.isDestroyed()) return
-        // 兜底：确保左键是释放状态，避免 drag 的 mouseUp 刚发完但 Electron 状态未同步
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-        doClick()
-      })
-    } else {
-      doClick()
-    }
-    function doClick () {
-      if (win.isDestroyed()) return
-      if (action === 'click' || action === 'clickAll') {
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-      } else {
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
-      }
-    }
+  // ★ click/右键/滚动：先中断该窗口未完成的 drag，确保左键释放，再执行
+  cancelDrag(winIdx)
+
+  if (action === 'click' || action === 'clickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+  } else if (action === 'rightclick' || action === 'rightclickAll') {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
   } else if (action === 'scroll' || action === 'scrollAll') {
     win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
   }
