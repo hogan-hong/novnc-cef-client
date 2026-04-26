@@ -522,9 +522,9 @@ function startAPIServer (groupIndex) {
     if (req.method === 'POST') {
       let body = ''
       req.on('data', chunk => { body += chunk.toString() })
-      req.on('end', async () => {
+      req.on('end', () => {
         try {
-          const result = await handleControlCommand(JSON.parse(body))
+          const result = handleControlCommand(JSON.parse(body))
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ success: true, message: result }))
         } catch (e) {
@@ -623,19 +623,20 @@ function startAPIServer (groupIndex) {
 }
 
 // ========== HTTP API: 外部控制命令 ==========
+// ★ 每个窗口的拖动 Promise，click 等操作执行前先等它完成
+const _dragPromises = {}
+
 async function handleControlCommand (data) {
   const { action } = data
   if (action.endsWith('All')) {
     let count = 0
-    const promises = []
-    vncWindows.forEach((w, i) => { if (w && !w.isDestroyed()) { promises.push(sendToVNC(i, data)); count++ } })
-    await Promise.all(promises)
+    vncWindows.forEach((w, i) => { if (w && !w.isDestroyed()) { sendToVNC(i, data); count++ } })
     return `Sent to ${count} windows`
   }
   const idx = data.windowIndex || 0
   const win = vncWindows[idx]
   if (!win || win.isDestroyed()) throw new Error(`Window ${idx} not found`)
-  await sendToVNC(idx, data)
+  sendToVNC(idx, data)
   return `Sent to window ${idx}`
 }
 
@@ -700,10 +701,8 @@ function sendToVNC (winIdx, data) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
     }
 
-    // ★ 返回 Promise，等 mouseUp 完成后才 resolve
-    // 这样调用方（handleControlCommand）会等拖动真正结束后再返回 HTTP 响应
-    // 后续的 click 等操作不会在左键还是按下状态时执行
-    return new Promise((resolve) => {
+    // ★ drag 立即返回HTTP，但记录 Promise，click 等操作会等它完成
+    const dragPromise = new Promise((resolve) => {
       // 按下起点
       win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
 
@@ -725,9 +724,14 @@ function sendToVNC (winIdx, data) {
         if (!win.isDestroyed()) {
           win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
         }
+        // 清除 drag Promise 记录
+        if (_dragPromises[winIdx] === dragPromise) delete _dragPromises[winIdx]
         resolve()
       }, duration + hold)
     })
+    // ★ 记录这个窗口的 drag Promise，后续 click 会等它
+    _dragPromises[winIdx] = dragPromise
+    return
   }
 
   // ★★★ 鼠标/滚动事件 ★★★
@@ -740,12 +744,29 @@ function sendToVNC (winIdx, data) {
   // ★ 纯数学算viewport，不需要canvas缓存
   const vp = apiToViewport(apiX, apiY, win)
 
-  if (action === 'click' || action === 'clickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-  } else if (action === 'rightclick' || action === 'rightclickAll') {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
+  // ★ click 等操作前先等该窗口的 drag 完成，再发 mouseUp 兜底确保按钮状态干净
+  if (action === 'click' || action === 'clickAll' || action === 'rightclick' || action === 'rightclickAll') {
+    const dragP = _dragPromises[winIdx]
+    if (dragP) {
+      dragP.then(() => {
+        if (win.isDestroyed()) return
+        // 兜底：确保左键是释放状态，避免 drag 的 mouseUp 刚发完但 Electron 状态未同步
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+        doClick()
+      })
+    } else {
+      doClick()
+    }
+    function doClick () {
+      if (win.isDestroyed()) return
+      if (action === 'click' || action === 'clickAll') {
+        win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+      } else {
+        win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
+      }
+    }
   } else if (action === 'scroll' || action === 'scrollAll') {
     win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
   }
