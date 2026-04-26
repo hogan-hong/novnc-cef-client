@@ -522,9 +522,9 @@ function startAPIServer (groupIndex) {
     if (req.method === 'POST') {
       let body = ''
       req.on('data', chunk => { body += chunk.toString() })
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
-          const result = handleControlCommand(JSON.parse(body))
+          const result = await handleControlCommand(JSON.parse(body))
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ success: true, message: result }))
         } catch (e) {
@@ -623,17 +623,19 @@ function startAPIServer (groupIndex) {
 }
 
 // ========== HTTP API: 外部控制命令 ==========
-function handleControlCommand (data) {
+async function handleControlCommand (data) {
   const { action } = data
   if (action.endsWith('All')) {
     let count = 0
-    vncWindows.forEach((w, i) => { if (w && !w.isDestroyed()) { sendToVNC(i, data); count++ } })
+    const promises = []
+    vncWindows.forEach((w, i) => { if (w && !w.isDestroyed()) { promises.push(sendToVNC(i, data)); count++ } })
+    await Promise.all(promises)
     return `Sent to ${count} windows`
   }
   const idx = data.windowIndex || 0
   const win = vncWindows[idx]
   if (!win || win.isDestroyed()) throw new Error(`Window ${idx} not found`)
-  sendToVNC(idx, data)
+  await sendToVNC(idx, data)
   return `Sent to window ${idx}`
 }
 
@@ -698,28 +700,34 @@ function sendToVNC (winIdx, data) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
     }
 
-    // 按下起点
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
+    // ★ 返回 Promise，等 mouseUp 完成后才 resolve
+    // 这样调用方（handleControlCommand）会等拖动真正结束后再返回 HTTP 响应
+    // 后续的 click 等操作不会在左键还是按下状态时执行
+    return new Promise((resolve) => {
+      // 按下起点
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
 
-    // 中间移动步
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps
-      const et = mode === 'ease' ? easeInOut(t) : t  // ease模式用缓动，否则匀速
-      const curX = Math.round(vpFrom.x + (vpTo.x - vpFrom.x) * et)
-      const curY = Math.round(vpFrom.y + (vpTo.y - vpFrom.y) * et)
-      const delay = Math.round(stepTime * i)
+      // 中间移动步
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps
+        const et = mode === 'ease' ? easeInOut(t) : t  // ease模式用缓动，否则匀速
+        const curX = Math.round(vpFrom.x + (vpTo.x - vpFrom.x) * et)
+        const curY = Math.round(vpFrom.y + (vpTo.y - vpFrom.y) * et)
+        const delay = Math.round(stepTime * i)
+        setTimeout(() => {
+          if (win.isDestroyed()) { resolve(); return }
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
+        }, delay)
+      }
+
+      // 抬起终点（拖动结束后 hold 毫秒再松开）
       setTimeout(() => {
-        if (win.isDestroyed()) return
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
-      }, delay)
-    }
-
-    // 抬起终点（拖动结束后 hold 毫秒再松开）
-    setTimeout(() => {
-      if (win.isDestroyed()) return
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
-    }, duration + hold)
-    return
+        if (!win.isDestroyed()) {
+          win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
+        }
+        resolve()
+      }, duration + hold)
+    })
   }
 
   // ★★★ 鼠标/滚动事件 ★★★
