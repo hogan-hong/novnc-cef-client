@@ -630,8 +630,11 @@ function cancelDrag (winIdx) {
     state.resolved = true
     const win = vncWindows[winIdx]
     if (win && !win.isDestroyed()) {
-      // 立即发 mouseUp 释放左键，确保 Electron 按钮状态干净
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: 0, y: 0, button: 'left', clickCount: 1 })
+      // ★ 用最后一次已知的 mouseMove 坐标发 mouseUp，而不是 (0,0)
+      // (0,0) 在 canvas 外面，noVNC 不认，导致 VNC 侧左键一直没松
+      const lastX = state.lastX != null ? state.lastX : 0
+      const lastY = state.lastY != null ? state.lastY : 0
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: lastX, y: lastY, button: 'left', clickCount: 1 })
     }
     if (state.resolve) state.resolve()
   }
@@ -717,7 +720,7 @@ function sendToVNC (winIdx, data) {
     cancelDrag(winIdx)
 
     const timers = []
-    const state = { timers, resolved: false, resolve: null }
+    const state = { timers, resolved: false, resolve: null, lastX: vpFrom.x, lastY: vpFrom.y }
     _dragState[winIdx] = state
 
     // 按下起点
@@ -732,6 +735,7 @@ function sendToVNC (winIdx, data) {
       const delay = Math.round(stepTime * i)
       timers.push(setTimeout(() => {
         if (state.resolved || win.isDestroyed()) return
+        state.lastX = curX; state.lastY = curY  // ★ 记录最后位置
         win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: curY })
       }, delay))
     }
@@ -739,6 +743,7 @@ function sendToVNC (winIdx, data) {
     // 抬起终点（拖动结束后 hold 毫秒再松开）
     timers.push(setTimeout(() => {
       if (state.resolved || win.isDestroyed()) return
+      state.lastX = vpTo.x; state.lastY = vpTo.y  // ★ 更新最后位置
       win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
       state.resolved = true
       if (_dragState[winIdx] === state) delete _dragState[winIdx]
