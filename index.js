@@ -84,13 +84,7 @@ function readConfig () {
       const u = content.match(new RegExp(`URL${i}=(.+)`, 'm'))
       const t = content.match(new RegExp(`窗口标题${i}=(.+)`, 'm'))
       const ip = content.match(new RegExp(`控制IP${i}=(.+)`, 'm'))
-      const vu = content.match(new RegExp(`videourl${i}=(.+)`, 'm'))
-      if (u && u[1].trim()) {
-        const url = u[1].trim()
-        // 如果没配 videourl，自动从 URL 生成：vnc_lite → vnc_video
-        let videoUrl = vu ? vu[1].trim() : url.replace(/vnc_lite/, 'vnc_video').replace(/vnc_run/, 'vnc_video')
-        config.items.push({ index: i, url, videoUrl, title: t ? t[1].trim() : `窗口${i}`, controlIP: ip ? ip[1].trim() : '' })
-      }
+      if (u && u[1].trim()) config.items.push({ index: i, url: u[1].trim(), title: t ? t[1].trim() : `窗口${i}`, controlIP: ip ? ip[1].trim() : '' })
     }
     if (config.groups.length === 0) {
       require('electron').dialog.showErrorBox('配置异常', `未找到分组信息！\n请检查 配置文件.int 中的 组1名称 等字段`)

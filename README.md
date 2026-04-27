@@ -23,18 +23,14 @@
 URL1=http://172.16.103.16:5801/vnc_lite.html?autoconnect=true&host=172.16.103.16&port=5901&encrypt=0
 窗口标题1=手机1
 控制IP1=172.16.103.16
-videourl1=http://172.16.103.16:5801/vnc_video.html?autoconnect=true&host=172.16.103.16&port=5901&encrypt=0
 URL2=http://172.16.103.17:5801/vnc_lite.html?autoconnect=true&host=172.16.103.17&port=5901&encrypt=0
 窗口标题2=手机2
 控制IP2=172.16.103.17
-videourl2=http://172.16.103.17:5801/vnc_video.html?autoconnect=true&host=172.16.103.17&port=5901&encrypt=0
 ...
 ```
 
 - 每组最多5个窗口，最多10组（共50个窗口）
 - 编码支持 UTF-8 和 GBK 自动检测
-- `URL` 用于控制窗口（vnc_lite.html），`videourl` 用于屏幕墙（vnc_video.html，10fps低画质）
-- `videourl` 可选，未配置时自动从 `URL` 替换 `vnc_lite` → `vnc_video`
 
 ### 直接运行
 
@@ -210,4 +206,4 @@ curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","wi
 - 日志写入exe同目录 `Log.txt`
 - **拖动中断机制**：click/scroll 等操作执行前会自动中断同窗口未完成的 drag（取消定时器+释放左键），确保操作立即生效，不会因 drag 未完成而卡住
 - **noVNC setCapture 禁用**：启动时自动禁用 noVNC 的 `setCapture` 机制，避免 capture proxy 干扰 `sendInputEvent` 导致左键不弹起
-- **控制/视频 URL 分离**：配置文件 `URL` 指向 `vnc_lite.html`（控制窗口），`videourl` 指向 `vnc_video.html`（屏幕墙，可独立部署到其他 HTTP server）
+
