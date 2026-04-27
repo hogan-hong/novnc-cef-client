@@ -756,7 +756,26 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★★★ 鼠标/滚动事件 ★★★
+  // ★★★ 滚轮事件（不需要越界检查，坐标只是定位用） ★★★
+  if (action === 'scroll' || action === 'scrollAll') {
+    cancelDrag(winIdx)
+    const scrollX = x || 0
+    const scrollY = y || 0
+    // 坐标限制在合法范围内，但不过滤
+    const clampedX = Math.max(0, Math.min(scrollX, CLIENT_WIDTH - 1))
+    const clampedY = Math.max(0, Math.min(scrollY, CLIENT_HEIGHT - 1))
+    const vp = apiToViewport(clampedX, clampedY, win)
+    // deltaY 正数=向下滚，负数=向上滚（API约定）
+    // Electron mouseWheel 的 deltaY 正数=向下，所以直接传，不取反
+    // 乘以滚动倍率，API传1=滚动3行（与VNC兼容）
+    const scrollMultiplier = 3
+    const wheelDeltaY = (deltaY || 0) * scrollMultiplier
+    const wheelDeltaX = (deltaX || 0) * scrollMultiplier
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -wheelDeltaX, deltaY: -wheelDeltaY, canScroll: true })
+    return
+  }
+
+  // ★★★ 鼠标点击事件 ★★★
   const apiX = x || 0
   const apiY = y || 0
 
@@ -766,7 +785,7 @@ function sendToVNC (winIdx, data) {
   // ★ 纯数学算viewport，不需要canvas缓存
   const vp = apiToViewport(apiX, apiY, win)
 
-  // ★ click/右键/滚动：先中断该窗口未完成的 drag，确保左键释放，再执行
+  // ★ click/右键：先中断该窗口未完成的 drag，确保左键释放，再执行
   cancelDrag(winIdx)
 
   if (action === 'click' || action === 'clickAll') {
@@ -775,8 +794,6 @@ function sendToVNC (winIdx, data) {
   } else if (action === 'rightclick' || action === 'rightclickAll') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
-  } else if (action === 'scroll' || action === 'scrollAll') {
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -(deltaX || 0), deltaY: -(deltaY || 0), canScroll: true })
   }
 }
 
