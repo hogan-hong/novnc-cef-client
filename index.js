@@ -468,7 +468,7 @@ function forwardWheelEvent (sourceIdx, data) {
 }
 
 // ========== HTTP API 服务 ==========
-function startAPIServer (groupIndex) {
+function startAPIServer (groupIndex, config) {
   const port = 38980 + groupIndex
   currentGroupIndex = groupIndex
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
@@ -883,7 +883,7 @@ function createVNCWindows (config, groupIndex) {
     function createNextWindow(i) {
       if (i >= groupItems.length) {
         createControlButtons(vncWindows[0] || null)
-        if (!apiServer) startAPIServer(groupIndex)
+        if (!apiServer) startAPIServer(groupIndex, config)
         return
       }
       createOneWindow(groupItems[i], i)
@@ -891,7 +891,7 @@ function createVNCWindows (config, groupIndex) {
         // 最后一个窗口创建完后，等间隔再初始化控制按钮
         setTimeout(() => {
           createControlButtons(vncWindows[0] || null)
-          if (!apiServer) startAPIServer(groupIndex)
+          if (!apiServer) startAPIServer(groupIndex, config)
         }, windowDelay)
       } else {
         setTimeout(() => createNextWindow(i + 1), windowDelay)
@@ -904,7 +904,7 @@ function createVNCWindows (config, groupIndex) {
       createOneWindow(item, i)
     })
     createControlButtons(vncWindows[0] || null)
-    if (!apiServer) startAPIServer(groupIndex)
+    if (!apiServer) startAPIServer(groupIndex, config)
   }
 }
 
