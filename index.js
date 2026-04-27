@@ -630,8 +630,6 @@ function cancelDrag (winIdx) {
     state.resolved = true
     const win = vncWindows[winIdx]
     if (win && !win.isDestroyed()) {
-      // ★ 用最后一次已知的 mouseMove 坐标发 mouseUp，而不是 (0,0)
-      // (0,0) 在 canvas 外面，noVNC 不认，导致 VNC 侧左键一直没松
       const lastX = state.lastX != null ? state.lastX : 0
       const lastY = state.lastY != null ? state.lastY : 0
       win.webContents.sendInputEvent({ type: 'mouseUp', x: lastX, y: lastY, button: 'left', clickCount: 1 })
@@ -743,7 +741,7 @@ function sendToVNC (winIdx, data) {
     // 抬起终点（拖动结束后 hold 毫秒再松开）
     timers.push(setTimeout(() => {
       if (state.resolved || win.isDestroyed()) return
-      state.lastX = vpTo.x; state.lastY = vpTo.y  // ★ 更新最后位置
+      state.lastX = vpTo.x; state.lastY = vpTo.y
       win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
       state.resolved = true
       if (_dragState[winIdx] === state) delete _dragState[winIdx]
@@ -873,6 +871,22 @@ function createVNCWindows (config, groupIndex) {
             e.preventDefault();
             e.stopPropagation();
           }, true);
+
+          // ★ 禁用 noVNC 的 setCapture 机制
+          // setCapture 会创建全屏透明 proxy 覆盖 canvas，导致 sendInputEvent 的
+          // mouseUp 被 proxy 吞掉/重定向失败，VNC 侧左键一直按住不弹起
+          // 禁用后 mouseUp 直接落在 canvas 上，noVNC 正确处理
+          var origSetCapture = Element.prototype.setCapture;
+          Element.prototype.setCapture = function() {
+            // no-op：不允许 capture，避免 proxy 干扰 sendInputEvent
+          };
+          // 也禁用 document 级别的 capture polyfill
+          if (document.captureElement !== undefined) {
+            Object.defineProperty(document, 'captureElement', {
+              get: function() { return null; },
+              set: function() {}
+            });
+          }
         })()
       `).catch(() => {})
     })
