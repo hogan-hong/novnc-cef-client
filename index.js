@@ -756,24 +756,32 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  // ★★★ 滚轮事件（不需要越界检查，坐标只是定位用） ★★★
+  // ★★★ 滚轮事件 ★★★
+  // NoVNC/VNC 协议只支持逐格滚动（按钮事件），没有连续滚动量
+  // NoVNC 内部累积 deltaY，≥50px 触发一格滚动然后归零
+  // 所以发一个大 delta 只会滚一格，多余的被丢弃
+  // 正确做法：拆成多次小 delta 发送，每次 ≥50px 就触发一格
   if (action === 'scroll' || action === 'scrollAll') {
     cancelDrag(winIdx)
     const scrollX = x || 0
     const scrollY = y || 0
-    // 坐标限制在合法范围内，但不过滤
     const clampedX = Math.max(0, Math.min(scrollX, CLIENT_WIDTH - 1))
     const clampedY = Math.max(0, Math.min(scrollY, CLIENT_HEIGHT - 1))
     const vp = apiToViewport(clampedX, clampedY, win)
-    // deltaY 正数=向下滚，负数=向上滚（API约定，与DOM一致）
-    // Electron sendInputEvent 的 mouseWheel 用 Windows WHEEL_DELTA 单位：120=一格
-    // 所以 API 传 1 = 滚一格 = 120，需要 ×120
-    // sendInputEvent 的 deltaY 符号与 DOM 相反：正数=向上，负数=向下
-    // 所以再取反：API正数(下) → sendInputEvent负数(下)
-    const WHEEL_DELTA = 120
-    const wheelDeltaY = (deltaY || 0) * WHEEL_DELTA
-    const wheelDeltaX = (deltaX || 0) * WHEEL_DELTA
-    win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -wheelDeltaX, deltaY: -wheelDeltaY, canScroll: true })
+    // deltaY 正数=向下滚，负数=向上滚（API约定）
+    // 绝对值=滚动格数，1=滚1格
+    const stepsY = Math.abs(deltaY || 0)
+    const stepsX = Math.abs(deltaX || 0)
+    const dirY = (deltaY || 0) > 0 ? -1 : 1  // API正(下)→Electron负
+    const dirX = (deltaX || 0) > 0 ? -1 : 1
+    // 每次 mouseWheel 发送 55px 的 delta（NoVNC 阈值50px，留点余量）
+    const STEP_PX = 55
+    for (let i = 0; i < stepsY; i++) {
+      win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: 0, deltaY: dirY * STEP_PX, canScroll: true })
+    }
+    for (let i = 0; i < stepsX; i++) {
+      win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: dirX * STEP_PX, deltaY: 0, canScroll: true })
+    }
     return
   }
 
