@@ -3,7 +3,6 @@ const path = require('path')
 const fs = require('fs')
 const { execFile } = require('child_process')
 const http = require('http')
-const WebSocket = require('ws')
 
 // ========== 日志写入同目录Log.txt（异步缓冲，避免磁盘IO阻塞）==========
 const logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
@@ -598,20 +597,8 @@ function startAPIServer (groupIndex, config) {
     }
     res.writeHead(404); res.end('Not Found')
   })
-  // ★ 屏幕墙改用 iframe 直连 vnc_video.html，替代 WebSocket 截图推流
-  // 不再需要 wss.on('connection')，屏幕墙页面自己连 VNC
-  const wss = new WebSocket.Server({ server })
-  wss.on('connection', (ws) => {
-    // 兼容：如果老版本屏幕墙连过来，返回空避免报错
-    ws.on('message', () => {})
-    ws.close()
-  })
-
-  server.listen(port, '0.0.0.0', () => console.log(`API + Sync + WS on http://0.0.0.0:${port}`))
+  server.listen(port, '0.0.0.0', () => console.log(`API + Sync on http://0.0.0.0:${port}`))
   apiServer = server
-
-  // ★ 屏幕墙服务：自动发现所有已启动的客户端，汇总它们的 videourl
-  startOverviewServer(config)
 }
 
 // ========== HTTP API: 外部控制命令 ==========
@@ -974,187 +961,6 @@ function createVNCWindows (config, groupIndex) {
   }
 }
 
-// ========== 屏幕墙服务 (端口38988，自动接管) ==========
-let overviewServer = null
-let overviewCheckTimer = null
-// ★ 屏幕墙收集的各组视频URL（由每个客户端进程注册）
-let overviewVideoUrls = {}  // groupIndex -> [{index, videoUrl, title, controlIP}]
-let overviewApiPort = null  // 本客户端的API端口，用于注册到屏幕墙
-
-function startOverviewServer (config) {
-  const OVERVIEW_PORT = 38988
-  // ★ 本客户端注册自己的 videourl 到屏幕墙（如果自己就是屏幕墙主程序则直接写内存）
-  registerVideoUrls(config)
-  tryBindOverview(OVERVIEW_PORT, config)
-  startOverviewWatchdog(OVERVIEW_PORT, config)
-}
-
-// ★ 注册本客户端的 videourl 到屏幕墙
-function registerVideoUrls (config) {
-  const startIdx = (currentGroupIndex - 1) * 5
-  const groupItems = config.items.slice(startIdx, startIdx + 5)
-  const myUrls = groupItems.map((item, i) => ({
-    index: i,
-    videoUrl: item.videoUrl,
-    title: item.title,
-    controlIP: item.controlIP,
-    group: currentGroupIndex
-  }))
-  overviewVideoUrls[currentGroupIndex] = myUrls
-
-  // ★ 如果屏幕墙主程序不是自己，通过HTTP注册
-  if (!overviewServer) {
-    setTimeout(() => {
-      try {
-        const regData = JSON.stringify({ group: currentGroupIndex, urls: myUrls })
-        const req = http.request({
-          hostname: '127.0.0.1', port: 38988, path: '/register',
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(regData) }
-        }, () => {})
-        req.on('error', () => {})
-        req.write(regData)
-        req.end()
-      } catch (e) {}
-    }, 1000)
-  }
-}
-
-function tryBindOverview (port, config) {
-  const testServer = require('net').createServer()
-  testServer.on('error', () => {
-    // 端口被占用，说明已有其他客户端在当屏幕墙主程序
-    testServer.close()
-  })
-  testServer.listen(port, '0.0.0.0', () => {
-    testServer.close(() => {
-      // 端口空闲，启动屏幕墙
-      overviewServer = http.createServer((req, res) => {
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-        if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
-
-        // ★ 接收其他客户端注册的 videourl
-        if (req.method === 'POST' && req.url === '/register') {
-          let body = ''
-          req.on('data', chunk => { body += chunk.toString() })
-          req.on('end', () => {
-            try {
-              const data = JSON.parse(body)
-              overviewVideoUrls[data.group] = data.urls
-              console.log(`[屏幕墙] 注册组${data.group}的${data.urls.length}个视频URL`)
-            } catch (e) {}
-            res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end('{"ok":true}')
-          })
-          return
-        }
-
-        if (req.url === '/' || req.url === '/overview') {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-          res.end(buildOverviewHTML())
-        } else {
-          res.writeHead(404); res.end()
-        }
-      })
-      overviewServer.listen(port, '0.0.0.0', () => {
-        console.log(`[屏幕墙] 启动成功: http://0.0.0.0:${port}/overview`)
-      })
-      overviewServer.on('error', () => {
-        // bind失败，被其他客户端抢先了
-        overviewServer = null
-      })
-    })
-  })
-}
-
-function startOverviewWatchdog (port, config) {
-  if (overviewCheckTimer) clearInterval(overviewCheckTimer)
-  overviewCheckTimer = setInterval(() => {
-    // 如果自己就是屏幕墙主程序，不需要检测
-    if (overviewServer) return
-    // 检测38988是否存活
-    const socket = new (require('net').Socket)()
-    socket.setTimeout(1500)
-    socket.on('connect', () => {
-      // 端口还活着，注册自己的URL（屏幕墙可能重启了）
-      socket.destroy()
-      if (config) registerVideoUrls(config)
-    })
-    socket.on('error', () => {
-      // 连不上，可能主程序挂了，尝试接管
-      socket.destroy()
-      tryBindOverview(port, config)
-    })
-    socket.on('timeout', () => {
-      socket.destroy()
-    })
-    socket.connect(port, '127.0.0.1')
-  }, 3000)
-}
-
-// ★ 动态生成屏幕墙 HTML（iframe 直连 vnc_video.html）
-function buildOverviewHTML () {
-  // 汇总所有已注册的视频URL
-  const allItems = []
-  const sortedGroups = Object.keys(overviewVideoUrls).sort((a, b) => a - b)
-  sortedGroups.forEach(g => {
-    overviewVideoUrls[g].forEach(item => {
-      allItems.push(item)
-    })
-  })
-
-  // 生成 iframe 片段
-  let iframeParts = ''
-  allItems.forEach((item, i) => {
-    const label = item.controlIP || item.title || `窗口${i}`
-    iframeParts += `
-      <div class="cell">
-        <div class="label">${label}</div>
-        <iframe src="${item.videoUrl}" allow="autoplay"></iframe>
-      </div>`
-  })
-
-  // 如果没有任何注册的URL，显示提示
-  if (allItems.length === 0) {
-    iframeParts = '<div class="empty">等待客户端注册...</div>'
-  }
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>NoVNC 屏幕墙</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;color:#eee;font-family:"Microsoft YaHei",sans-serif;overflow:hidden;height:100vh;width:100vw}
-#grid{width:100%;height:100%;display:flex;flex-wrap:wrap;align-content:flex-start}
-.cell{position:relative;background:#000;border:none;display:flex;align-items:center;justify-content:center;overflow:hidden}
-.cell iframe{width:100%;height:100%;border:none}
-.cell .label{position:absolute;top:2px;left:4px;font-size:11px;background:rgba(0,0,0,0.7);padding:1px 5px;border-radius:3px;color:#aaa;z-index:10;pointer-events:none}
-.empty{text-align:center;padding-top:40vh;color:#666;font-size:16px}
-</style></head><body>
-<div id="grid">${iframeParts}</div>
-<script>
-// 自动布局：根据窗口数量调整每个cell的尺寸
-function layoutGrid() {
-  const cells = document.querySelectorAll('.cell')
-  if (cells.length === 0) return
-  const gW = window.innerWidth, gH = window.innerHeight
-  const total = cells.length
-  // 5列布局
-  const cols = Math.min(5, total)
-  const rows = Math.ceil(total / cols)
-  const cellW = Math.floor(gW / cols)
-  const cellH = Math.floor(gH / rows)
-  cells.forEach(cell => {
-    cell.style.width = cellW + 'px'
-    cell.style.height = cellH + 'px'
-  })
-}
-layoutGrid()
-window.addEventListener('resize', layoutGrid)
-// ★ 定时刷新页面获取最新注册的URL（每10秒）
-setTimeout(() => { if (document.querySelectorAll('.cell iframe').length === 0) location.reload() }, 10000)
-</script></body></html>`
-}
 
 app.whenReady().then(() => {
   const config = readConfig()
@@ -1185,7 +991,6 @@ ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
   if (exitWindow) { try { exitWindow.destroy() } catch (e) {} exitWindow = null }
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
-  if (overviewServer) { try { overviewServer.close() } catch (e) {} overviewServer = null }
   app.quit(); process.exit(0)
 })
 app.on('window-all-closed', () => {})

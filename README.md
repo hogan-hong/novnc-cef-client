@@ -210,5 +210,4 @@ curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","wi
 - 日志写入exe同目录 `Log.txt`
 - **拖动中断机制**：click/scroll 等操作执行前会自动中断同窗口未完成的 drag（取消定时器+释放左键），确保操作立即生效，不会因 drag 未完成而卡住
 - **noVNC setCapture 禁用**：启动时自动禁用 noVNC 的 `setCapture` 机制，避免 capture proxy 干扰 `sendInputEvent` 导致左键不弹起
-- **屏幕墙 iframe 直连**：屏幕墙改用 iframe 嵌入 `vnc_video.html`（10fps + 画质1 + 压缩9），替代旧的 WebSocket 截图推流方案，大幅降低性能开销
-- **控制/视频 URL 分离**：配置文件 `URL` 指向 `vnc_lite.html`（控制窗口），`videourl` 指向 `vnc_video.html`（屏幕墙），可独立配置
+- **控制/视频 URL 分离**：配置文件 `URL` 指向 `vnc_lite.html`（控制窗口），`videourl` 指向 `vnc_video.html`（屏幕墙，可独立部署到其他 HTTP server）
