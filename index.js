@@ -765,12 +765,14 @@ function sendToVNC (winIdx, data) {
     const clampedX = Math.max(0, Math.min(scrollX, CLIENT_WIDTH - 1))
     const clampedY = Math.max(0, Math.min(scrollY, CLIENT_HEIGHT - 1))
     const vp = apiToViewport(clampedX, clampedY, win)
-    // deltaY 正数=向下滚，负数=向上滚（API约定）
-    // Electron mouseWheel 的 deltaY 正数=向下，所以直接传，不取反
-    // 乘以滚动倍率，API传1=滚动3行（与VNC兼容）
-    const scrollMultiplier = 3
-    const wheelDeltaY = (deltaY || 0) * scrollMultiplier
-    const wheelDeltaX = (deltaX || 0) * scrollMultiplier
+    // deltaY 正数=向下滚，负数=向上滚（API约定，与DOM一致）
+    // Electron sendInputEvent 的 mouseWheel 用 Windows WHEEL_DELTA 单位：120=一格
+    // 所以 API 传 1 = 滚一格 = 120，需要 ×120
+    // sendInputEvent 的 deltaY 符号与 DOM 相反：正数=向上，负数=向下
+    // 所以再取反：API正数(下) → sendInputEvent负数(下)
+    const WHEEL_DELTA = 120
+    const wheelDeltaY = (deltaY || 0) * WHEEL_DELTA
+    const wheelDeltaX = (deltaX || 0) * WHEEL_DELTA
     win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: -wheelDeltaX, deltaY: -wheelDeltaY, canScroll: true })
     return
   }
