@@ -722,6 +722,7 @@ function sendToVNC (winIdx, data) {
     _dragState[winIdx] = state
 
     // 按下起点
+    console.log(`[DRAG] win${winIdx} mouseDown at (${vpFrom.x},${vpFrom.y}) duration=${duration} hold=${hold} steps=${steps}`)
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vpFrom.x, y: vpFrom.y, button: 'left', clickCount: 1 })
 
     // 中间移动步
@@ -742,7 +743,23 @@ function sendToVNC (winIdx, data) {
     timers.push(setTimeout(() => {
       if (state.resolved || win.isDestroyed()) return
       state.lastX = vpTo.x; state.lastY = vpTo.y
+      console.log(`[DRAG] win${winIdx} mouseUp at (${vpTo.x},${vpTo.y}) after ${duration + hold}ms`)
       win.webContents.sendInputEvent({ type: 'mouseUp', x: vpTo.x, y: vpTo.y, button: 'left', clickCount: 1 })
+      // ★ 安全验证：检查 noVNC 内部 _mouseButtonMask 是否已清零
+      win.webContents.executeJavaScript(`
+        (function() {
+          var c = document.getElementById('screen');
+          if (!c) { console.log('[DRAG-CHECK] no #screen element'); return; }
+          var canvas = c.querySelector('canvas');
+          if (!canvas) { console.log('[DRAG-CHECK] no canvas'); return; }
+          // 检查 capture proxy 是否存在
+          var proxy = document.getElementById('noVNC_mouse_capture_elem');
+          console.log('[DRAG-CHECK] proxy exists=' + !!proxy + ' display=' + (proxy ? proxy.style.display : 'N/A'));
+          console.log('[DRAG-CHECK] captureElement=' + !!document.captureElement);
+          // 检查 setCapture 是否被禁用
+          console.log('[DRAG-CHECK] setCapture overridden=' + (Element.prototype.setCapture.toString().indexOf('native') === -1));
+        })()
+      `).catch(() => {})
       state.resolved = true
       if (_dragState[winIdx] === state) delete _dragState[winIdx]
       if (state.resolve) state.resolve()
@@ -792,6 +809,36 @@ function sendToVNC (winIdx, data) {
 
   // ★ click/右键：先中断该窗口未完成的 drag，确保左键释放，再执行
   cancelDrag(winIdx)
+
+  // ★★★ 左键弹起 ★★★ 单独释放左键，用于 drag 后左键卡住时手动调用
+  if (action === 'release' || action === 'releaseAll') {
+    cancelDrag(winIdx)
+    // 1. sendInputEvent mouseUp
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
+    // 2. executeJavaScript 强制触发 canvas mouseup — 绕过一切 capture proxy
+    win.webContents.executeJavaScript(`
+      (function() {
+        var c = document.getElementById('screen');
+        if (!c) return;
+        var canvas = c.querySelector('canvas');
+        if (!canvas) return;
+        var rect = canvas.getBoundingClientRect();
+        var cx = rect.left + rect.width / 2;
+        var cy = rect.top + rect.height / 2;
+        canvas.dispatchEvent(new MouseEvent('mouseup', {
+          bubbles: true, cancelable: true,
+          clientX: cx, clientY: cy,
+          button: 0, buttons: 0
+        }));
+        // 也释放 capture
+        if (document.captureElement) document.captureElement = null;
+        var proxy = document.getElementById('noVNC_mouse_capture_elem');
+        if (proxy) proxy.style.display = 'none';
+        console.log('[RELEASE] left button released at canvas center (' + cx + ',' + cy + ')');
+      })()
+    `).catch(() => {})
+    return
+  }
 
   if (action === 'click' || action === 'clickAll') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
