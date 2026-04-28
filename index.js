@@ -621,17 +621,30 @@ function cancelDrag (winIdx) {
 }
 
 async function handleControlCommand (data) {
-  const { action } = data
-  if (action.endsWith('All')) {
-    let count = 0
-    vncWindows.forEach((w, i) => { if (w && !w.isDestroyed()) { sendToVNC(i, data); count++ } })
-    return `Sent to ${count} windows`
+  // ★ 解析 windowIndex：字符串中每个字符代表一个窗口编号
+  // "0" → [0], "4" → [4], "13" → [1,3], "04" → [0,4], "01234" → [0,1,2,3,4]
+  const wi = data.windowIndex
+  let indices = []
+  if (typeof wi === 'string' && wi.length > 0) {
+    for (const ch of wi) {
+      const idx = parseInt(ch)
+      if (!isNaN(idx) && idx >= 0 && idx < vncWindows.length) {
+        indices.push(idx)
+      }
+    }
+  } else if (typeof wi === 'number') {
+    // 兼容旧版数字传参
+    if (wi >= 0 && wi < vncWindows.length) indices.push(wi)
+  } else {
+    indices.push(0) // 默认窗口0
   }
-  const idx = data.windowIndex || 0
-  const win = vncWindows[idx]
-  if (!win || win.isDestroyed()) throw new Error(`Window ${idx} not found`)
-  sendToVNC(idx, data)
-  return `Sent to window ${idx}`
+  if (indices.length === 0) throw new Error('No valid windowIndex')
+  for (const idx of indices) {
+    const win = vncWindows[idx]
+    if (!win || win.isDestroyed()) continue
+    sendToVNC(idx, data)
+  }
+  return `Sent to window ${indices.join(',')}`
 }
 
 // ★★★ sendToVNC: API控制 → VNC窗口 ★★★
@@ -642,7 +655,7 @@ function sendToVNC (winIdx, data) {
   const { action, x, y, deltaY, deltaX, text, code, down } = data
 
   // 剪贴板走executeJavaScript
-  if (action === 'clipboard' || action === 'clipboardAll') {
+  if (action === 'clipboard') {
     win.webContents.executeJavaScript(`
       (function(){
         var r = window.__rfb;
@@ -653,7 +666,7 @@ function sendToVNC (winIdx, data) {
   }
 
   // 键盘走sendInputEvent
-  if (action === 'keypress' || action === 'keypressAll') {
+  if (action === 'keypress') {
     const keyCode = code || ''
     if (down === true) {
       // 显式传 down=true → 只发按下
@@ -670,7 +683,7 @@ function sendToVNC (winIdx, data) {
   }
 
   // ★★★ 拖动事件 ★★★
-  if (action === 'drag' || action === 'dragAll') {
+  if (action === 'drag') {
     const fromX = data.fromX != null ? data.fromX : 0
     const fromY = data.fromY != null ? data.fromY : 0
     const toX = data.toX != null ? data.toX : fromX
@@ -754,7 +767,7 @@ function sendToVNC (winIdx, data) {
   // NoVNC 内部累积 deltaY，≥50px 触发一格滚动然后归零
   // 所以发一个大 delta 只会滚一格，多余的被丢弃
   // 正确做法：拆成多次小 delta 发送，每次 ≥50px 就触发一格
-  if (action === 'scroll' || action === 'scrollAll') {
+  if (action === 'scroll') {
     cancelDrag(winIdx)
     const scrollX = x || 0
     const scrollY = y || 0
@@ -792,7 +805,7 @@ function sendToVNC (winIdx, data) {
   cancelDrag(winIdx)
 
   // ★★★ 左键弹起 ★★★ 单独释放左键，用于 drag 后左键卡住时手动调用
-  if (action === 'release' || action === 'releaseAll') {
+  if (action === 'release') {
     cancelDrag(winIdx)
     // 1. sendInputEvent mouseUp
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
@@ -821,10 +834,10 @@ function sendToVNC (winIdx, data) {
     return
   }
 
-  if (action === 'click' || action === 'clickAll') {
+  if (action === 'click') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-  } else if (action === 'rightclick' || action === 'rightclickAll') {
+  } else if (action === 'rightclick') {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'right', clickCount: 1 })
   }

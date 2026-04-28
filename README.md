@@ -10,6 +10,7 @@
 ✅ 多窗口同步操作：主控窗口输入自动同步到其他窗口
 ✅ 主控窗口切换：点击窗口内"主控"按钮切换主控源
 ✅ HTTP API外部控制：支持通过API发送点击、滑动、键盘等指令
+✅ 灵活的windowIndex参数：单窗口、多窗口、群控一参搞定
 ✅ 可打包成单文件便携版，无需安装直接运行
 
 ## 使用方法
@@ -78,6 +79,21 @@ npm run build:mac
 
 API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标将被忽略。内部自动转换为手机实际分辨率 **1334×750**。
 
+### windowIndex 参数说明
+
+`windowIndex` 是**字符串类型**，每个字符代表一个窗口编号（0-4），支持单窗口、多窗口、群控：
+
+| 传参 | 效果 | 说明 |
+|------|------|------|
+| `"0"` | 控制第1个窗口 | 单窗口 |
+| `"4"` | 控制第5个窗口 | 单窗口 |
+| `"13"` | 同时控制第2、4个窗口 | 多窗口 |
+| `"04"` | 同时控制第1、5个窗口 | 多窗口 |
+| `"01234"` | 群控所有5个窗口 | 全部窗口 |
+| `0`（数字） | 控制第1个窗口 | 兼容旧版数字传参 |
+
+> 因为每批窗口最多5个（编号0-4），不会有双位数，所以直接把字符串按字符拆开即可解析每个窗口编号。
+
 ### 控制命令
 
 **POST** 请求，JSON格式：
@@ -87,7 +103,7 @@ API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标�
   "action": "click",
   "x": 428,
   "y": 240,
-  "windowIndex": 0
+  "windowIndex": "0"
 }
 ```
 
@@ -96,19 +112,12 @@ API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标�
 | action | 说明 | 参数 |
 |--------|------|------|
 | `click` | 左键单击 | x, y, windowIndex |
-| `clickAll` | 左键单击所有窗口 | x, y |
 | `rightclick` | 右键单击 | x, y, windowIndex |
-| `rightclickAll` | 右键单击所有窗口 | x, y |
 | `drag` | 左键拖动 | fromX, fromY, toX, toY, duration, mode, hold, windowIndex |
-| `dragAll` | 左键拖动所有窗口 | fromX, fromY, toX, toY, duration, mode, hold |
 | `release` | 释放左键 | x, y, windowIndex |
-| `releaseAll` | 释放所有窗口左键 | x, y |
 | `scroll` | 滚轮 | x, y, deltaY, deltaX, windowIndex |
-| `scrollAll` | 滚轮所有窗口 | x, y, deltaY, deltaX |
 | `keypress` | 按键 | code, down, windowIndex |
-| `keypressAll` | 按键所有窗口 | code, down |
 | `clipboard` | 粘贴文本 | text, windowIndex |
-| `clipboardAll` | 粘贴文本所有窗口 | text |
 
 #### release 参数说明
 
@@ -116,7 +125,7 @@ API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标�
 |------|------|------|--------|------|
 | `x` | int | 否 | 0 | 释放坐标X |
 | `y` | int | 否 | 0 | 释放坐标Y |
-| `windowIndex` | int | 否 | 0 | 目标窗口索引 |
+| `windowIndex` | string | 否 | "0" | 目标窗口 |
 
 > 三重释放机制：`sendInputEvent` mouseUp + canvas `dispatchEvent` mouseup + 隐藏 capture proxy，确保 VNC 侧左键完全释放。适用于 drag 后左键卡住不弹起时手动调用。
 
@@ -131,61 +140,69 @@ API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标�
 | `duration` | int | 否 | 300 | 拖动时间（毫秒） |
 | `mode` | string | 否 | `uniform` | 拖动模式：`uniform` 匀速 / `ease` 模拟拖动（先加速后减速） |
 | `hold` | int | 否 | 0 | 到达终点后保持按住的时间（毫秒），0=立即松开 |
-| `windowIndex` | int | 否 | 0 | 目标窗口索引 |
+| `windowIndex` | string | 否 | "0" | 目标窗口 |
 
 #### scroll 参数说明
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `x` | int | 否 | 0 | 滚轮位置X（不传则默认0） |
-| `y` | int | 否 | 0 | 滚轮位置Y（不传则默认0） |
-| `deltaY` | int | 否 | 0 | 垂直滚动格数，正数=向下滚，负数=向上滚（1=滚1格，3=滚3格） |
-| `deltaX` | int | 否 | 0 | 水平滚动格数，正数=向右滚，负数=向左滚（1=滚1格） |
-| `windowIndex` | int | 否 | 0 | 目标窗口索引 |
+| `x` | int | 否 | 0 | 滚轮位置X |
+| `y` | int | 否 | 0 | 滚轮位置Y |
+| `deltaY` | int | 否 | 0 | 垂直滚动格数，正数=向下，负数=向上（1=滚1格） |
+| `deltaX` | int | 否 | 0 | 水平滚动格数，正数=向右，负数=向左（1=滚1格） |
+| `windowIndex` | string | 否 | "0" | 目标窗口 |
 
 > **注意**：scroll 不受越界检查限制，坐标只是定位用。deltaY/deltaX 为**滚动格数**（非像素），VNC 协议只支持逐格滚动，内部自动拆分为多次事件发送，传 3 就滚 3 格。
 
 #### 示例
 
 ```bash
-# 窗口0点击坐标(428, 240)
-curl -X POST http://127.0.0.1:38981 -d '{"action":"click","x":428,"y":240,"windowIndex":0}'
+# 第1个窗口点击坐标(428, 240)
+curl -X POST http://127.0.0.1:38981 -d '{"action":"click","x":428,"y":240,"windowIndex":"0"}'
 
-# 所有窗口点击
-curl -X POST http://127.0.0.1:38981 -d '{"action":"clickAll","x":428,"y":240}'
+# 同时控制第2和第4个窗口点击
+curl -X POST http://127.0.0.1:38981 -d '{"action":"click","x":428,"y":240,"windowIndex":"13"}'
 
-# 窗口0匀速拖动：从(100,200)拖到(700,400)，耗时500ms
-curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":200,"toX":700,"toY":400,"duration":500,"mode":"uniform","windowIndex":0}'
+# 群控所有5个窗口点击
+curl -X POST http://127.0.0.1:38981 -d '{"action":"click","x":428,"y":240,"windowIndex":"01234"}'
 
-# 所有窗口模拟拖动（ease缓动）：从(200,300)拖到(600,150)，耗时800ms
-curl -X POST http://127.0.0.1:38981 -d '{"action":"dragAll","fromX":200,"fromY":300,"toX":600,"toY":150,"duration":800,"mode":"ease"}'
+# 第1个窗口匀速拖动：从(100,200)拖到(700,400)，耗时500ms
+curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":200,"toX":700,"toY":400,"duration":500,"mode":"uniform","windowIndex":"0"}'
+
+# 群控所有窗口模拟拖动（ease缓动）
+curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":200,"fromY":300,"toX":600,"toY":150,"duration":800,"mode":"ease","windowIndex":"01234"}'
+
+# 同时控制第1、3窗口拖动
+curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":200,"toX":700,"toY":400,"windowIndex":"02"}'
 
 # 角色跑动：拖动虚拟摇杆后保持按住2秒
-curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":400,"toX":300,"toY":400,"duration":200,"hold":2000,"windowIndex":0}'
+curl -X POST http://127.0.0.1:38981 -d '{"action":"drag","fromX":100,"fromY":400,"toX":300,"toY":400,"duration":200,"hold":2000,"windowIndex":"0"}'
 
 # 手动释放左键（drag后左键卡住时使用）
-curl -X POST http://127.0.0.1:38981 -d '{"action":"release","windowIndex":0}'
+curl -X POST http://127.0.0.1:38981 -d '{"action":"release","windowIndex":"0"}'
 
 # 释放所有窗口左键
-curl -X POST http://127.0.0.1:38981 -d '{"action":"releaseAll"}'
+curl -X POST http://127.0.0.1:38981 -d '{"action":"release","windowIndex":"01234"}'
 
-# 窗口0向下滚动3行
-curl -X POST http://127.0.0.1:38981 -d '{"action":"scroll","x":428,"y":240,"deltaY":3,"windowIndex":0}'
+# 第1个窗口向下滚动3行
+curl -X POST http://127.0.0.1:38981 -d '{"action":"scroll","x":428,"y":240,"deltaY":3,"windowIndex":"0"}'
 
-# 窗口0向上滚动5行
-curl -X POST http://127.0.0.1:38981 -d '{"action":"scroll","x":428,"y":240,"deltaY":-5,"windowIndex":0}'
-```
+# 群控所有窗口向上滚动5行
+curl -X POST http://127.0.0.1:38981 -d '{"action":"scroll","x":428,"y":240,"deltaY":-5,"windowIndex":"01234"}'
 
-# 所有窗口按键回车
-curl -X POST http://127.0.0.1:38981 -d '{"action":"keypressAll","code":"Enter"}'
+# 群控所有窗口按键回车
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"Enter","windowIndex":"01234"}'
 
-# 窗口0长按W键2秒（手动控制按下/抬起）
-curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":true,"windowIndex":0}'
+# 第1个窗口长按W键2秒（手动控制按下/抬起）
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":true,"windowIndex":"0"}'
 sleep 2
-curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":false,"windowIndex":0}'
+curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"KeyW","down":false,"windowIndex":"0"}'
 
-# 窗口0粘贴文本
-curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","windowIndex":0}'
+# 第1个窗口粘贴文本
+curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","windowIndex":"0"}'
+
+# 同时控制第2、4窗口粘贴文本
+curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","windowIndex":"13"}'
 ```
 
 ### 诊断接口
@@ -204,6 +221,6 @@ curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","wi
 - API坐标转换使用纯数学计算（`getContentSize` + 固定分辨率比例），不依赖canvas缓存
 - 窗口标题使用 PowerShell + C# 辅助类设置第二层Chrome窗口标题
 - 日志写入exe同目录 `Log.txt`
-- **拖动中断机制**：click/scroll 等操作执行前会自动中断同窗口未完成的 drag（取消定时器+释放左键），确保操作立即生效，不会因 drag 未完成而卡住
+- **windowIndex 字符拆分**：每批最多5个窗口（编号0-4），`windowIndex` 传字符串，每个字符代表一个窗口编号，如 `"13"` 同时控制窗口1和3，`"01234"` 群控全部
+- **拖动中断机制**：click/scroll 等操作执行前会自动中断同窗口未完成的 drag（取消定时器+释放左键），确保操作立即生效
 - **noVNC setCapture 禁用**：启动时自动禁用 noVNC 的 `setCapture` 机制，避免 capture proxy 干扰 `sendInputEvent` 导致左键不弹起
-
