@@ -877,6 +877,7 @@ function createVNCWindows (config, groupIndex) {
     const win = new BrowserWindow({
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
+      resizable: false,  // ★ 禁止拖动边缘修改窗口大小
       useContentSize: true, show: true, backgroundColor: '#000000',
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
