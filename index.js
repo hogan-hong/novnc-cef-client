@@ -297,7 +297,7 @@ function injectMasterButtons () {
             fetch('http://127.0.0.1:${38980 + currentGroupIndex}/set-master', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ windowIndex: ${i} })
+              body: JSON.stringify({ windowIndex: ${i + 1} })  // 1-based
             }).catch(function(){});
           } catch(ex) {}
         }, true);
@@ -480,8 +480,10 @@ function startAPIServer (groupIndex, config) {
         try {
           const data = JSON.parse(body)
           const newMaster = data.windowIndex
-          if (newMaster >= 0 && newMaster < vncWindows.length) {
-            masterWindowIndex = newMaster
+          // 1-based → 0-based
+          const masterIdx = typeof newMaster === 'number' && newMaster >= 1 ? newMaster - 1 : (newMaster <= 0 ? 0 : parseInt(newMaster) - 1)
+          if (masterIdx >= 0 && masterIdx < vncWindows.length) {
+            masterWindowIndex = masterIdx
             updateMasterButtons()
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -537,7 +539,7 @@ function startAPIServer (groupIndex, config) {
     // ★ 诊断端点
     if (req.method === 'GET' && req.url.startsWith('/diag')) {
       const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
-      const diagIdx = parseInt(urlObj.searchParams.get('win') || '0')
+      const diagIdx = parseInt(urlObj.searchParams.get('win') || '1') - 1  // 1-based → 0-based
       const diagWin = vncWindows[diagIdx]
       if (!diagWin || diagWin.isDestroyed()) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -571,7 +573,7 @@ function startAPIServer (groupIndex, config) {
     // ★ 打开DevTools端点
     if (req.method === 'GET' && req.url.startsWith('/devtools')) {
       const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
-      const devIdx = parseInt(urlObj.searchParams.get('win') || '0')
+      const devIdx = parseInt(urlObj.searchParams.get('win') || '1') - 1  // 1-based → 0-based
       const devWin = vncWindows[devIdx]
       if (devWin && !devWin.isDestroyed()) {
         devWin.webContents.openDevTools()
@@ -621,30 +623,35 @@ function cancelDrag (winIdx) {
 }
 
 async function handleControlCommand (data) {
-  // ★ 解析 windowIndex：字符串中每个字符代表一个窗口编号
-  // "0" → [0], "4" → [4], "13" → [1,3], "04" → [0,4], "01234" → [0,1,2,3,4]
+  // ★ 解析 windowIndex：字符串中每个字符代表一个窗口编号（1-based）
+  // "1" → 窗口1, "5" → 窗口5, "13" → 窗口1+3, "15" → 窗口1+5, "12345" → 群控全部
   const wi = data.windowIndex
   let indices = []
   if (typeof wi === 'string' && wi.length > 0) {
     for (const ch of wi) {
-      const idx = parseInt(ch)
-      if (!isNaN(idx) && idx >= 0 && idx < vncWindows.length) {
+      const num = parseInt(ch)
+      // 1-based → 0-based内部索引
+      const idx = num - 1
+      if (!isNaN(num) && num >= 1 && idx < vncWindows.length) {
         indices.push(idx)
       }
     }
   } else if (typeof wi === 'number') {
-    // 兼容旧版数字传参
-    if (wi >= 0 && wi < vncWindows.length) indices.push(wi)
+    // 兼容旧版：数字0当作窗口1，数字1+直接用
+    const idx = wi <= 0 ? 0 : wi - 1
+    if (idx >= 0 && idx < vncWindows.length) indices.push(idx)
   } else {
-    indices.push(0) // 默认窗口0
+    indices.push(0) // 默认窗口1
   }
   if (indices.length === 0) throw new Error('No valid windowIndex')
+  // 去重
+  indices = [...new Set(indices)]
   for (const idx of indices) {
     const win = vncWindows[idx]
     if (!win || win.isDestroyed()) continue
     sendToVNC(idx, data)
   }
-  return `Sent to window ${indices.join(',')}`
+  return `Sent to window ${indices.map(i => i + 1).join(',')}`
 }
 
 // ★★★ sendToVNC: API控制 → VNC窗口 ★★★
