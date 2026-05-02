@@ -388,8 +388,8 @@ const PHONE_HEIGHT = 750
 function apiToViewport (apiX, apiY, win) {
   const [winW, winH] = win.getContentSize()
   const scale = Math.min(winW / PHONE_WIDTH, winH / PHONE_HEIGHT)
-  const vpX = Math.round(apiX * (PHONE_WIDTH / CLIENT_WIDTH) * scale + (winW - PHONE_WIDTH * scale) / 2)
-  const vpY = Math.round(apiY * (PHONE_HEIGHT / CLIENT_HEIGHT) * scale + (winH - PHONE_HEIGHT * scale) / 2)
+  const vpX = Math.round(apiX * (PHONE_WIDTH / CLIENT_WIDTH) * scale)
+  const vpY = Math.round(apiY * (PHONE_HEIGHT / CLIENT_HEIGHT) * scale)
   return { x: vpX, y: vpY }
 }
 
