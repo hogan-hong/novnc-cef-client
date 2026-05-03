@@ -66,7 +66,7 @@ function readConfig () {
   const configArg = process.argv.find(a => a.startsWith('--config='))
   let configPath
   if (configArg) {
-    configPath = configArg.substring(8) // '--config='.length = 8
+    configPath = configArg.substring(9) // '--config='.length = 9
     if (!path.isAbsolute(configPath)) {
       configPath = path.resolve(path.dirname(app.getPath('exe')), configPath)
     }
