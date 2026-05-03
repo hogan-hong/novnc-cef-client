@@ -46,24 +46,35 @@ app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess')
 app.commandLine.appendSwitch('mute-audio')
 
 // ========== 全局状态 ==========
-let syncEnabled = false
+let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
 let currentGroupIndex = 1
 const vncWindows = []
 let apiServer = null
-let exitWindow = null
+let controlBarWindow = null    // 右下角控制栏窗口
 let selectWindow = null
 
-// ★ 主控窗口索引，只有主控窗口的输入会同步到其他窗口
-let masterWindowIndex = 0
+// ★ 主控窗口索引，-1=无主控，≥0=主控窗口索引
+// 只有主控窗口的输入会同步到其他窗口
+let masterWindowIndex = -1
 
 // ★ Canvas 信息缓存：每个窗口的 canvas 尺寸和位置
 const canvasInfoCache = {}
 
-// ========== 读取配置文件 ==========
+// ========== 读取配置文件（支持 --config=路径 启动参数）==========
 function readConfig () {
-  const configPath = path.join(path.dirname(app.getPath('exe')), '配置文件.int')
+  // 支持启动参数指定配置文件：--config=路径
+  const configArg = process.argv.find(a => a.startsWith('--config='))
+  let configPath
+  if (configArg) {
+    configPath = configArg.substring(8) // '--config='.length = 8
+    if (!path.isAbsolute(configPath)) {
+      configPath = path.resolve(path.dirname(app.getPath('exe')), configPath)
+    }
+  } else {
+    configPath = path.join(path.dirname(app.getPath('exe')), '配置文件.int')
+  }
   if (!fs.existsSync(configPath)) {
-    require('electron').dialog.showErrorBox('配置文件不存在', `未找到配置文件！\n路径: ${configPath}\n请将 配置文件.int 放在exe同目录下`)
+    require('electron').dialog.showErrorBox('配置文件不存在', `未找到配置文件！\n路径: ${configPath}\n请将 配置文件.int 放在exe同目录下，或通过 --config=路径 指定`)
     return null
   }
   console.log(`使用配置文件: ${configPath}`)
@@ -168,17 +179,22 @@ function showGroupSelector (config) {
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ========== 右下角控制按钮 ==========
+// ========== 右下角控制栏（控制 + 退出）==========
 function createControlButtons (parentWin) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
-  exitWindow = new BrowserWindow({ x: workArea.width - 130, y: workArea.height - 40, width: 120, height: 30, frame: false, transparent: true, parent: parentWin, alwaysOnTop: false, skipTaskbar: true, resizable: false, webPreferences: { nodeIntegration: true, contextIsolation: false } })
-  exitWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:2px}button{width:59px;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#syncBtn{background:#28a745}#syncBtn:hover{background:#218838}#syncBtn.active{background:#dc3545}#syncBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="syncBtn" onclick="toggleSync()">同步</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let s=false;function toggleSync(){s=!s;const b=document.getElementById('syncBtn');if(s){b.textContent='关闭同步';b.classList.add('active')}else{b.textContent='同步';b.classList.remove('active')}ipcRenderer.send('toggle-sync',s)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
-  exitWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  controlBarWindow = new BrowserWindow({
+    x: workArea.width - 130, y: workArea.height - 40,
+    width: 120, height: 30,
+    frame: false, transparent: true, parent: parentWin,
+    alwaysOnTop: false, skipTaskbar: true, resizable: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  })
+  controlBarWindow.setMenu(null)
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:2px}button{width:59px;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ========== 主控按钮：在每个VNC窗口内注入/移除 ==========
-// ★★★ 同步事件捕获注入（按需注入，关闭同步时移除）★★★
+// ★★★ 同步事件捕获注入（按需注入，关闭控制时移除）★★★
 function injectSyncCapture () {
   const apiPort = 38980 + currentGroupIndex
   vncWindows.forEach((win, i) => {
@@ -265,32 +281,40 @@ function removeSyncCapture () {
   })
 }
 
-function injectMasterButtons () {
+// ========== 控制按钮：在每个VNC窗口内注入（主控 + 刷新）==========
+function injectControlButtons () {
   vncWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       (function() {
-        // 避免重复注入：已有按钮时显示并更新样式
-        var existingBtn = document.getElementById('__novnc_master_btn');
-        if (existingBtn) {
-          existingBtn.style.display = 'block';
-          existingBtn.style.background = ${i} === ${masterWindowIndex} ? '#28a745' : '#555';
-          existingBtn.textContent = ${i} === ${masterWindowIndex} ? '主控✓' : '主控';
+        // 避免重复注入：已有控制栏时显示并更新样式
+        var existingBar = document.getElementById('__novnc_control_bar');
+        if (existingBar) {
+          existingBar.style.display = 'flex';
+          var masterBtn = document.getElementById('__novnc_master_btn');
+          var isMaster = ${i} === ${masterWindowIndex};
+          if (masterBtn) {
+            masterBtn.style.background = isMaster ? '#28a745' : '#555';
+            masterBtn.textContent = isMaster ? '主控✓' : '主控';
+          }
           return;
         }
-        var btn = document.createElement('div');
-        btn.id = '__novnc_master_btn';
-        btn.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;padding:4px 10px;' +
-          'border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;' +
-          'cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;' +
-          'background:' + (${i} === ${masterWindowIndex} ? "'#28a745'" : "'#555'") + ';';
-        btn.textContent = ${i} === ${masterWindowIndex} ? '主控✓' : '主控';
-        btn.addEventListener('mouseenter', function(){ btn.style.opacity = '1'; });
-        btn.addEventListener('mouseleave', function(){ btn.style.opacity = '0.85'; });
-        // 点击切换主控，阻止事件冒泡到 #screen 的同步捕获
-        btn.addEventListener('mousedown', function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-        btn.addEventListener('mouseup', function(e){ e.stopPropagation(); }, true);
-        btn.addEventListener('click', function(e){
+        var bar = document.createElement('div');
+        bar.id = '__novnc_control_bar';
+        bar.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;display:flex;gap:4px;';
+
+        // 主控按钮
+        var masterBtn = document.createElement('div');
+        masterBtn.id = '__novnc_master_btn';
+        var isMaster = ${i} === ${masterWindowIndex};
+        masterBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:' + (isMaster ? '#28a745' : '#555') + ';';
+        masterBtn.textContent = isMaster ? '主控✓' : '主控';
+        masterBtn.addEventListener('mouseenter', function(){ masterBtn.style.opacity = '1'; });
+        masterBtn.addEventListener('mouseleave', function(){ masterBtn.style.opacity = '0.85'; });
+        ['mousedown', 'mouseup', 'click'].forEach(function(et) {
+          masterBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
+        });
+        masterBtn.addEventListener('click', function(e){
           e.stopPropagation();
           e.preventDefault();
           try {
@@ -301,31 +325,56 @@ function injectMasterButtons () {
             }).catch(function(){});
           } catch(ex) {}
         }, true);
-        document.body.appendChild(btn);
+
+        // 刷新按钮
+        var refreshBtn = document.createElement('div');
+        refreshBtn.id = '__novnc_refresh_btn';
+        refreshBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#007bff;';
+        refreshBtn.textContent = '刷新';
+        refreshBtn.addEventListener('mouseenter', function(){ refreshBtn.style.opacity = '1'; });
+        refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
+        ['mousedown', 'mouseup', 'click'].forEach(function(et) {
+          refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
+        });
+        refreshBtn.addEventListener('click', function(e){
+          e.stopPropagation();
+          e.preventDefault();
+          try {
+            fetch('http://127.0.0.1:${38980 + currentGroupIndex}/refresh', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ windowIndex: ${i + 1} })  // 1-based
+            }).catch(function(){});
+          } catch(ex) {}
+        }, true);
+
+        bar.appendChild(masterBtn);
+        bar.appendChild(refreshBtn);
+        document.body.appendChild(bar);
       })()
     `).catch(() => {})
   })
 }
 
-function removeMasterButtons () {
+function removeControlButtons () {
   vncWindows.forEach((win) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
-      var btn = document.getElementById('__novnc_master_btn');
-      if (btn) btn.style.display = 'none';
+      var bar = document.getElementById('__novnc_control_bar');
+      if (bar) bar.style.display = 'none';
     `).catch(() => {})
   })
 }
 
-function updateMasterButtons () {
+function updateControlButtons () {
   vncWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     const isMaster = i === masterWindowIndex
     win.webContents.executeJavaScript(`
-      var btn = document.getElementById('__novnc_master_btn');
-      if (btn) {
-        btn.style.background = ${isMaster} ? '#28a745' : '#555';
-        btn.textContent = ${isMaster} ? '主控✓' : '主控';
+      var masterBtn = document.getElementById('__novnc_master_btn');
+      if (masterBtn) {
+        masterBtn.style.background = ${isMaster} ? '#28a745' : '#555';
+        masterBtn.textContent = ${isMaster} ? '主控✓' : '主控';
       }
     `).catch(() => {})
   })
@@ -395,11 +444,12 @@ function apiToViewport (apiX, apiY, win) {
 
 // ★★★ 同步核心逻辑 — sendInputEvent + 主控切换 ★★★
 // 只有主控窗口 (masterWindowIndex) 的输入会同步到其他窗口
+// 控制模式开启 + 有主控窗口时才转发同步事件
 // 其他窗口可以正常单独操作，不会影响别的窗口
 
 // ========== 同步：转发鼠标事件到其他窗口 ==========
 function forwardMouseEvent (sourceIdx, data) {
-  if (!syncEnabled) return
+  if (!controlMode || masterWindowIndex < 0) return
   if (sourceIdx !== masterWindowIndex) return
 
   const { eventType, x: vncX, y: vncY, button } = data
@@ -425,7 +475,7 @@ function forwardMouseEvent (sourceIdx, data) {
 
 // ========== 同步：转发键盘事件到其他窗口 ==========
 function forwardKeyEvent (sourceIdx, data) {
-  if (!syncEnabled) return
+  if (!controlMode || masterWindowIndex < 0) return
   if (sourceIdx !== masterWindowIndex) return
 
   vncWindows.forEach((win, i) => {
@@ -440,7 +490,7 @@ function forwardKeyEvent (sourceIdx, data) {
 
 // ========== 同步：转发滚轮事件到其他窗口 ==========
 function forwardWheelEvent (sourceIdx, data) {
-  if (!syncEnabled) return
+  if (!controlMode || masterWindowIndex < 0) return
   if (sourceIdx !== masterWindowIndex) return
 
   vncWindows.forEach((win, i) => {
@@ -472,7 +522,7 @@ function startAPIServer (groupIndex, config) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
 
-    // ★ 设置主控窗口
+    // ★ 设置主控窗口（点击当前主控 → 取消主控，点击其他窗口 → 切换主控）
     if (req.method === 'POST' && req.url === '/set-master') {
       let body = ''
       req.on('data', chunk => { body += chunk.toString() })
@@ -481,10 +531,40 @@ function startAPIServer (groupIndex, config) {
           const data = JSON.parse(body)
           const newMaster = data.windowIndex
           // 1-based → 0-based
-          const masterIdx = typeof newMaster === 'number' && newMaster >= 1 ? newMaster - 1 : (newMaster <= 0 ? 0 : parseInt(newMaster) - 1)
-          if (masterIdx >= 0 && masterIdx < vncWindows.length) {
+          const masterIdx = typeof newMaster === 'number' && newMaster >= 1 ? newMaster - 1 : -1
+          // Toggle逻辑：点击当前主控 → 取消主控；点击其他窗口 → 设为新主控
+          if (masterIdx === masterWindowIndex) {
+            masterWindowIndex = -1  // 取消主控
+          } else if (masterIdx >= 0 && masterIdx < vncWindows.length) {
             masterWindowIndex = masterIdx
-            updateMasterButtons()
+          }
+          updateControlButtons()
+          const syncActive = controlMode && masterWindowIndex >= 0
+          console.log(`主控窗口: ${masterWindowIndex >= 0 ? masterWindowIndex + 1 : '无'}, 同步: ${syncActive ? 'ON' : 'OFF'}`)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, master: masterWindowIndex, sync: syncActive }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end('{"ok":false}')
+        }
+      })
+      return
+    }
+
+    // ★ 刷新窗口画面
+    if (req.method === 'POST' && req.url === '/refresh') {
+      let body = ''
+      req.on('data', chunk => { body += chunk.toString() })
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body)
+          const refreshIdx = (data.windowIndex || 1) - 1  // 1-based → 0-based
+          if (refreshIdx >= 0 && refreshIdx < vncWindows.length) {
+            const refreshWin = vncWindows[refreshIdx]
+            if (refreshWin && !refreshWin.isDestroyed()) {
+              console.log(`刷新窗口 ${refreshIdx + 1} 画面`)
+              refreshWin.webContents.reload()
+            }
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end('{"ok":true}')
@@ -588,7 +668,14 @@ function startAPIServer (groupIndex, config) {
 
     if (req.method === 'GET' && req.url === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ success: true, windowCount: vncWindows.length, sync: syncEnabled, master: masterWindowIndex, port }))
+      res.end(JSON.stringify({
+        success: true,
+        windowCount: vncWindows.length,
+        control: controlMode,
+        master: masterWindowIndex,
+        sync: controlMode && masterWindowIndex >= 0,
+        port
+      }))
       return
     }
     res.writeHead(404); res.end('Not Found')
@@ -770,10 +857,6 @@ function sendToVNC (winIdx, data) {
   }
 
   // ★★★ 滚轮事件 ★★★
-  // NoVNC/VNC 协议只支持逐格滚动（按钮事件），没有连续滚动量
-  // NoVNC 内部累积 deltaY，≥50px 触发一格滚动然后归零
-  // 所以发一个大 delta 只会滚一格，多余的被丢弃
-  // 正确做法：拆成多次小 delta 发送，每次 ≥50px 就触发一格
   if (action === 'scroll') {
     cancelDrag(winIdx)
     const scrollX = x || 0
@@ -781,13 +864,10 @@ function sendToVNC (winIdx, data) {
     const clampedX = Math.max(0, Math.min(scrollX, CLIENT_WIDTH - 1))
     const clampedY = Math.max(0, Math.min(scrollY, CLIENT_HEIGHT - 1))
     const vp = apiToViewport(clampedX, clampedY, win)
-    // deltaY 正数=向下滚，负数=向上滚（API约定）
-    // 绝对值=滚动格数，1=滚1格
     const stepsY = Math.abs(deltaY || 0)
     const stepsX = Math.abs(deltaX || 0)
     const dirY = (deltaY || 0) > 0 ? -1 : 1  // API正(下)→Electron负
     const dirX = (deltaX || 0) > 0 ? -1 : 1
-    // 每次 mouseWheel 发送 55px 的 delta（NoVNC 阈值50px，留点余量）
     const STEP_PX = 55
     for (let i = 0; i < stepsY; i++) {
       win.webContents.sendInputEvent({ type: 'mouseWheel', x: vp.x, y: vp.y, deltaX: 0, deltaY: dirY * STEP_PX, canScroll: true })
@@ -814,9 +894,7 @@ function sendToVNC (winIdx, data) {
   // ★★★ 左键弹起 ★★★ 单独释放左键，用于 drag 后左键卡住时手动调用
   if (action === 'release') {
     cancelDrag(winIdx)
-    // 1. sendInputEvent mouseUp
     win.webContents.sendInputEvent({ type: 'mouseUp', x: vp.x, y: vp.y, button: 'left', clickCount: 1 })
-    // 2. executeJavaScript 强制触发 canvas mouseup — 绕过一切 capture proxy
     win.webContents.executeJavaScript(`
       (function() {
         var c = document.getElementById('screen');
@@ -831,7 +909,6 @@ function sendToVNC (winIdx, data) {
           clientX: cx, clientY: cy,
           button: 0, buttons: 0
         }));
-        // 也释放 capture
         if (document.captureElement) document.captureElement = null;
         var proxy = document.getElementById('noVNC_mouse_capture_elem');
         if (proxy) proxy.style.display = 'none';
@@ -891,7 +968,7 @@ function createVNCWindows (config, groupIndex) {
 
     // ★ 键盘同步捕获
     win.webContents.on('before-input-event', (event, input) => {
-      if (!syncEnabled) return
+      if (!controlMode) return
       if (input.type !== 'keyDown' && input.type !== 'keyUp') return
       const si = vncWindows.indexOf(win)
       if (si === -1) return
@@ -911,7 +988,7 @@ function createVNCWindows (config, groupIndex) {
       setTimeout(() => refreshCanvasInfo(win, i), 2000)
       setTimeout(() => refreshCanvasInfo(win, i), 5000)
 
-      // ★ 只保留右键菜单拦截（轻量），同步捕获代码在开启同步时才注入
+      // ★ 只保留右键菜单拦截（轻量），同步捕获代码在开启控制模式时才注入
       win.webContents.executeJavaScript(`
         (function() {
           var screen = document.getElementById('screen');
@@ -922,14 +999,10 @@ function createVNCWindows (config, groupIndex) {
           }, true);
 
           // ★ 禁用 noVNC 的 setCapture 机制
-          // setCapture 会创建全屏透明 proxy 覆盖 canvas，导致 sendInputEvent 的
-          // mouseUp 被 proxy 吞掉/重定向失败，VNC 侧左键一直按住不弹起
-          // 禁用后 mouseUp 直接落在 canvas 上，noVNC 正确处理
           var origSetCapture = Element.prototype.setCapture;
           Element.prototype.setCapture = function() {
             // no-op：不允许 capture，避免 proxy 干扰 sendInputEvent
           };
-          // 也禁用 document 级别的 capture polyfill
           if (document.captureElement !== undefined) {
             Object.defineProperty(document, 'captureElement', {
               get: function() { return null; },
@@ -938,6 +1011,19 @@ function createVNCWindows (config, groupIndex) {
           }
         })()
       `).catch(() => {})
+
+      // ★ 控制模式开启时，重新注入控制按钮和同步捕获（刷新后页面重载需要重新注入）
+      if (controlMode) {
+        setTimeout(() => {
+          injectSyncCapture()
+          injectControlButtons()
+        }, 1000)
+        setTimeout(() => {
+          injectSyncCapture()
+          injectControlButtons()
+          updateControlButtons()
+        }, 3000)
+      }
     })
 
     win.on('resize', () => refreshCanvasInfo(win, i))
@@ -956,7 +1042,7 @@ function createVNCWindows (config, groupIndex) {
       }
       createOneWindow(groupItems[i], i)
       if (i === groupItems.length - 1) {
-        // 最后一个窗口创建完后，等间隔再初始化控制按钮
+        // 最后一个窗口创建完后，等间隔再初始化控制栏
         setTimeout(() => {
           createControlButtons(vncWindows[0] || null)
           if (!apiServer) startAPIServer(groupIndex, config)
@@ -987,24 +1073,32 @@ app.whenReady().then(() => {
 })
 
 ipcMain.on('select-group', (event, groupIndex) => { const config = readConfig(); if (config) createVNCWindows(config, groupIndex) })
-ipcMain.on('toggle-sync', (event, enabled) => {
-  syncEnabled = enabled
+
+// ★ 控制模式切换：点击右下角"控制"按钮
+ipcMain.on('toggle-control', (event, enabled) => {
+  controlMode = enabled
   if (enabled) {
+    // 开启控制模式：重置主控，注入同步捕获和控制按钮
+    masterWindowIndex = -1  // 无主控，需手动选择
     vncWindows.forEach((w, i) => refreshCanvasInfo(w, i))
     injectSyncCapture()
     setTimeout(() => {
-      injectMasterButtons()
-      updateMasterButtons()
+      injectControlButtons()
+      updateControlButtons()
     }, 300)
+    console.log('控制模式 ON（需选择主控窗口后同步才会启动）')
   } else {
+    // 关闭控制模式：移除所有控制UI，停止同步
+    masterWindowIndex = -1
     removeSyncCapture()
-    removeMasterButtons()
+    removeControlButtons()
+    console.log('控制模式 OFF，同步已停止')
   }
-  console.log(`Sync ${enabled ? 'ON' : 'OFF'}`)
 })
+
 ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
-  if (exitWindow) { try { exitWindow.destroy() } catch (e) {} exitWindow = null }
+  if (controlBarWindow) { try { controlBarWindow.destroy() } catch (e) {} controlBarWindow = null }
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
   app.quit(); process.exit(0)
 })
