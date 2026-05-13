@@ -16,8 +16,14 @@
     "asarUnpack": [
       "build/**"
     ],
+    "directories": {
+      "output": "dist"
+    },
     "win": {
-      "target": "portable"
+      "target": [
+        "portable",
+        "dir"
+      ]
     }
   },
   "keywords": [],

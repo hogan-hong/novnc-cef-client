@@ -20,6 +20,19 @@ jobs:
         run: npm run build:native || echo 'native模块编译失败，继续打包'
       - name: Build Windows portable exe
         run: npm run build:win
+      - name: Check dist directory
+        run: |
+          echo "=== dist directory exists ==="
+          if exist dist (
+            echo dist directory exists
+            dir dist /s
+          ) else (
+            echo dist directory NOT FOUND
+          )
+          echo ""
+          echo "=== current directory ==="
+          dir
+        continue-on-error: true
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         continue-on-error: true
