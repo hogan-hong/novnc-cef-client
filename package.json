@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "npm run build:native || echo 'native模块编译失败，继续打包' && electron-builder --win --publish never --config.compression=store",
-    "build:native": "node-gyp rebuild || true",
+    "build:win": "node scripts/build-win.js",
+    "build:native": "node-gyp rebuild",
     "rebuild": "npm run build:native"
   },
   "build": {

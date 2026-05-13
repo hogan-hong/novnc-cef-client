@@ -38,7 +38,6 @@ jobs:
             Write-Host "npm install failed, trying without cache..."
             npm install --no-cache
           }
-        continue-on-error: true
           
       - name: Build native addon
         run: |
@@ -64,6 +63,13 @@ jobs:
             Get-Content build.log -Tail 50
             exit 1
           }
+          if (!(Test-Path "dist") -or -not (Get-ChildItem "dist" -Recurse -File)) {
+            Write-Host "Build finished but dist is empty. Showing build log tail:"
+            Get-Content build.log -Tail 80
+            exit 1
+          }
+          Write-Host "Build artifacts:"
+          Get-ChildItem "dist" -Recurse -File | Select-Object FullName, Length
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
@@ -72,5 +78,5 @@ jobs:
         with:
           name: novnc-client-windows
           path: dist/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
