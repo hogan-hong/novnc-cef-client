@@ -7,37 +7,52 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2019  # 使用Windows Server 2019
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 18  # 使用Node 18，更稳定
+          
       - name: Install dependencies
-        run: npm ci
-      - name: Build native addon (OSR helper)
-        run: npm run build:native || echo 'native模块编译失败，继续打包'
-      - name: Build Windows portable exe
-        run: npm run build:win
-      - name: Check dist directory
         run: |
-          echo "=== dist directory exists ==="
+          npm install
+          
+      - name: Build native addon
+        run: |
+          npm run build:native
+        continue-on-error: true
+        
+      - name: Build Windows application
+        run: |
+          npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+      - name: List build outputs
+        run: |
+          echo "=== dist directory ==="
           if exist dist (
-            echo dist directory exists
             dir dist /s
           ) else (
-            echo dist directory NOT FOUND
+            echo "dist directory NOT FOUND"
           )
           echo ""
           echo "=== current directory ==="
           dir
         continue-on-error: true
-      - name: Upload Windows build artifact
+        
+      - name: Upload all build artifacts
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: novnc-client-windows
-          path: dist/
-          if-no-files-found: warn
-          retention-days: 7
+          path: |
+            dist/*.exe
+            dist/**/*.exe
+            dist/*.zip
+            dist/**/*.zip
+          if-no-files-found: error
+          retention-days: 30
+        continue-on-error: true
