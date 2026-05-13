@@ -29,6 +29,7 @@ const origLog = console.log
 const origErr = console.error
 let _logBuffer = []
 let _logFlushTimer = null
+
 function writeLog (msg) {
   const line = `[${new Date().toLocaleString('zh-CN', {hour12:false})}] ${msg}\n`
   _logBuffer.push(line)
@@ -49,8 +50,17 @@ function flushLog () {
 }
 console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
 console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
-console.log(`日志文件: ${logPath}`)
 
+// ★ 启动时立即写入日志，确保日志系统工作
+console.log('========== NoVNC Client 启动开始 ==========')
+console.log('日志文件:', logPath)
+console.log('进程ID:', process.pid)
+console.log('Node版本:', process.version)
+console.log('Electron版本:', process.versions.electron)
+console.log('平台:', process.platform)
+console.log('架构:', process.arch)
+
+// ★ 全局错误处理：捕获未处理的异常和Promise rejection
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err && (err.stack || err.message || err))
   try {
