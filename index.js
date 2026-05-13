@@ -1065,27 +1065,37 @@ function createVNCWindows (config, groupIndex) {
       windowDrawTimes[i] = now
 
       try {
-        // 尝试加载native模块（支持开发和打包环境）
-        let drawBitmapToWindow
-        try {
-          let osrHelperPath
-          // 尝试多个可能的路径
+        // 尝试加载native模块（仅在Windows平台有效）
+        let drawBitmapToWindow = null
+
+        // 只在Windows平台尝试加载native模块
+        if (process.platform === 'win32') {
           try {
-            osrHelperPath = path.join(__dirname, 'build', 'Release', 'osr_helper.node')
-            const osrHelper = require(osrHelperPath)
-            drawBitmapToWindow = osrHelper.drawBitmapToWindow
-          } catch (e1) {
+            let osrHelperPath
+            // 尝试多个可能的路径
             try {
-              osrHelperPath = path.join(app.getAppPath(), 'build', 'Release', 'osr_helper.node')
+              osrHelperPath = path.join(__dirname, 'build', 'Release', 'osr_helper.node')
               const osrHelper = require(osrHelperPath)
               drawBitmapToWindow = osrHelper.drawBitmapToWindow
-            } catch (e2) {
-              throw new Error(`native模块未找到: ${e1.message}`)
+            } catch (e1) {
+              try {
+                osrHelperPath = path.join(app.getAppPath(), 'build', 'Release', 'osr_helper.node')
+                const osrHelper = require(osrHelperPath)
+                drawBitmapToWindow = osr_helper.drawBitmapToWindow
+              } catch (e2) {
+                console.log(`[OSR] 窗口 ${i + 1}: native模块加载失败，跳过绘制 (${e1.message})`)
+                return
+              }
             }
+          } catch (e) {
+            console.log(`[OSR] 窗口 ${i + 1}: native模块加载失败，跳过绘制 (${e.message})`)
+            return
           }
-        } catch (e) {
-          // 如果native模块不可用，跳过绘制
-          console.log(`[OSR] 窗口 ${i + 1}: native模块未就绪，跳过绘制 (${e.message})`)
+        } else {
+          // 非Windows平台不支持native模块
+          if (i === 0) {  // 只输出一次警告
+            console.log('[OSR] 非Windows平台，native模块不可用，跳过OSR绘制功能')
+          }
           return
         }
 

@@ -1,53 +1,64 @@
-#include <nan.h>
+#include <node_api.h>
 #include <windows.h>
+#include <vector>
 
-using namespace Nan;
+napi_value DrawBitmapToWindow(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-// 绘制位图到指定窗口
-NAN_METHOD(DrawBitmapToWindow) {
-  if (info.Length() < 4) {
-    Nan::ThrowTypeError("Wrong number of arguments");
-    return;
-  }
+  // 参数1: HWND (作为Number传入)
+  uint32_t hwnd_value;
+  napi_get_value_uint32(env, args[0], &hwnd_value);
+  HWND hwnd = (HWND)hwnd_value;
 
-  HWND hwnd = reinterpret_cast<HWND>(info[0].As<Uint32>()->Value());
-  uint32_t width = info[1].As<Uint32>()->Value();
-  uint32_t height = info[2].As<Uint32>()->Value();
-  v8::Local<v8::Object> buffer = info[3].As<v8::Object>();
+  // 参数2: width
+  uint32_t width;
+  napi_get_value_uint32(env, args[1], &width);
 
-  if (!node::Buffer::HasInstance(buffer)) {
-    Nan::ThrowTypeError("Argument 3 must be a Buffer");
-    return;
-  }
+  // 参数3: height
+  uint32_t height;
+  napi_get_value_uint32(env, args[2], &height);
 
-  uint8_t* data = reinterpret_cast<uint8_t*>(node::Buffer::Data(buffer));
-  size_t len = node::Buffer::Length(buffer);
+  // 参数4: Buffer
+  void* data;
+  size_t length;
+  napi_get_buffer_info(env, args[3], &data, &length);
 
-  // 创建位图信息头
+  // 设置BITMAPINFO
   BITMAPINFO bmi = {0};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
   bmi.bmiHeader.biWidth = width;
-  bmi.bmiHeader.biHeight = -height; // 负值表示从上到下
+  bmi.bmiHeader.biHeight = -height;  // 负值表示自上而下
   bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32; // BGRA格式
+  bmi.bmiHeader.biBitCount = 32;
   bmi.bmiHeader.biCompression = BI_RGB;
-  bmi.bmiHeader.biSizeImage = len;
 
-  // 获取窗口DC并绘制
+  // 获取窗口HDC并绘制
   HDC hdc = GetDC(hwnd);
   if (hdc) {
-    StretchDIBits(hdc, 0, 0, width, height, 0, 0, width, height,
-                  data, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    StretchDIBits(hdc,
+      0, 0, width, height,  // 目标区域
+      0, 0, width, height,  // 源区域
+      data,
+      &bmi,
+      DIB_RGB_COLORS,
+      SRCCOPY
+    );
     ReleaseDC(hwnd, hdc);
   }
 
-  info.GetReturnValue().Set(Nan::True());
+  napi_value result;
+  napi_get_undefined(env, &result);
+  return result;
 }
 
-// 模块初始化
-NAN_MODULE_INIT(InitModule) {
-  Nan::Set(target, Nan::New("drawBitmapToWindow").ToLocalChecked(),
-            Nan::New<FunctionTemplate>(DrawBitmapToWindow)->GetFunction());
+napi_value Init(napi_env env, napi_value exports) {
+  napi_property_descriptor desc[] = {
+    {"drawBitmapToWindow", nullptr, DrawBitmapToWindow, nullptr, nullptr, nullptr, napi_default, nullptr}
+  };
+  napi_define_properties(env, exports, 1, desc);
+  return exports;
 }
 
-NODE_MODULE(osr_helper, InitModule)
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

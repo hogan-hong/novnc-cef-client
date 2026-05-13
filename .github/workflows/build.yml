@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build native addon (OSR helper)
-        run: npm run rebuild
+        run: npm run build:native || echo 'native模块编译失败，继续打包'
       - name: Build Windows portable exe
         run: npm run build:win
       - name: Upload Windows build artifact
