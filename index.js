@@ -69,6 +69,7 @@ const windowDrawTimes = []     // 每个窗口的最后一次绘制时间（限�
 let apiServer = null
 let controlBarWindow = null    // 右下角控制栏窗口
 let selectWindow = null
+let startupErrorWindow = null
 
 // OSR配置：固定帧率，降低CPU/GPU负载
 const OSR_FRAME_RATE = 15
@@ -92,14 +93,14 @@ function readConfig () {
       configPath = path.resolve(path.dirname(app.getPath('exe')), configPath)
     }
   } else {
-    configPath = path.join(path.dirname(app.getPath('exe')), '配置文件.int')
-    if (!fs.existsSync(configPath)) {
-      const bundledPath = path.join(__dirname, '配置文件.int')
-      if (fs.existsSync(bundledPath)) {
-        console.log(`exe同目录未找到配置文件，使用内置默认配置: ${bundledPath}`)
-        configPath = bundledPath
-      }
-    }
+    const candidates = [
+      path.join(path.dirname(app.getPath('exe')), '配置文件.int'),
+      path.join(process.cwd(), '配置文件.int'),
+      path.join(__dirname, '配置文件.int'),
+      path.join(process.resourcesPath || '', '配置文件.int')
+    ].filter(Boolean)
+    configPath = candidates.find(p => fs.existsSync(p)) || candidates[0]
+    console.log(`配置文件查找路径: ${candidates.join(' | ')}`)
   }
   if (!fs.existsSync(configPath)) {
     require('electron').dialog.showErrorBox('配置文件不存在', `未找到配置文件！\n路径: ${configPath}\n请将 配置文件.int 放在exe同目录下，或通过 --config=路径 指定`)
@@ -134,6 +135,35 @@ function readConfig () {
     require('electron').dialog.showErrorBox('读取配置文件失败', `文件: ${configPath}\n错误: ${e.message}`)
     return null
   }
+}
+
+function showStartupError (title, message) {
+  console.error(`${title}: ${message}`)
+  startupErrorWindow = new BrowserWindow({
+    width: 720,
+    height: 360,
+    show: false,
+    frame: true,
+    title,
+    resizable: true,
+    alwaysOnTop: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  })
+  startupErrorWindow.setMenu(null)
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:"Microsoft YaHei",Arial,sans-serif;margin:0;padding:24px;background:#101820;color:#f4f7fb}
+    h1{font-size:20px;margin:0 0 16px;color:#ffcc66}
+    pre{white-space:pre-wrap;word-break:break-word;background:#172331;border:1px solid #33475f;padding:14px;border-radius:6px;line-height:1.5}
+  </style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(message)}</pre></body></html>`
+  startupErrorWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  startupErrorWindow.once('ready-to-show', () => {
+    startupErrorWindow.show()
+    startupErrorWindow.focus()
+  })
+}
+
+function escapeHtml (value) {
+  return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
 // ========== 批量设置第二层窗口标题 ==========
@@ -199,12 +229,26 @@ function setLayer2Title (win, item) {
 
 // ========== 选组界面 ==========
 function showGroupSelector (config) {
-  selectWindow = new BrowserWindow({ width: 520, height: 120 + config.groups.length * 70, frame: true, title: 'NoVNC 群控 - 选择分组', resizable: false, webPreferences: { nodeIntegration: true, contextIsolation: false } })
+  selectWindow = new BrowserWindow({
+    width: 520,
+    height: 120 + config.groups.length * 70,
+    show: false,
+    frame: true,
+    title: 'NoVNC 群控 - 选择分组',
+    resizable: false,
+    alwaysOnTop: true,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  })
   selectWindow.setMenu(null)
+  selectWindow.center()
   let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Microsoft YaHei",sans-serif;background:#1a1a2e;color:#eee;padding:20px}h2{text-align:center;margin-bottom:18px;color:#e94560;font-size:18px}.group-btn{display:block;width:100%;padding:14px;margin-bottom:12px;font-size:16px;font-weight:bold;color:#fff;background:#16213e;border:2px solid #e94560;border-radius:8px;cursor:pointer}.group-btn:hover{background:#e94560}</style></head><body><h2>选择要启动的分组</h2>`
   config.groups.forEach((g) => { const s = (g.index - 1) * 5 + 1, e = g.index * 5; html += `<button class="group-btn" onclick="selectGroup(${g.index})">控制 ${g.name} 组（编号 ${s}-${e}）</button>\n` })
   html += `<script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  selectWindow.once('ready-to-show', () => {
+    selectWindow.show()
+    selectWindow.focus()
+  })
 }
 
 // ========== 右下角控制栏（控制 + 隐藏 + 退出）==========
@@ -1193,14 +1237,24 @@ function createVNCWindows (config, groupIndex) {
 
 app.whenReady().then(() => {
   const config = readConfig()
-  if (!config) { app.quit(); return }
-  if (config.groups.length === 0) { require('electron').dialog.showErrorBox('配置异常', '未找到分组信息！'); app.quit(); return }
+  if (!config) {
+    showStartupError('配置文件加载失败', `程序没有退出，但未能读取配置。\n\n请确认 配置文件.int 位于 exe 同目录，或使用 --config=完整路径 指定。\n\n日志位置优先为 exe 同目录 Log.txt，无法写入时在 ${app.getPath('userData')}\\Log.txt`)
+    return
+  }
+  if (config.groups.length === 0) {
+    showStartupError('配置异常', '未找到分组信息。请检查 配置文件.int 中是否存在 组1名称、组2名称 等字段。')
+    return
+  }
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
   app.on('activate', () => {})
 })
 
-ipcMain.on('select-group', (event, groupIndex) => { const config = readConfig(); if (config) createVNCWindows(config, groupIndex) })
+ipcMain.on('select-group', (event, groupIndex) => {
+  const config = readConfig()
+  if (selectWindow && !selectWindow.isDestroyed()) selectWindow.close()
+  if (config) createVNCWindows(config, groupIndex)
+})
 
 // ★ 控制模式切换：点击右下角"控制"按钮
 ipcMain.on('toggle-control', (event, enabled) => {
