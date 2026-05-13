@@ -16,6 +16,8 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: npm ci
+      - name: Build native addon (OSR helper)
+        run: npm run rebuild
       - name: Build Windows portable exe
         run: npm run build:win
       - name: Upload Windows build artifact

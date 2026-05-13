@@ -13,6 +13,9 @@
     "appId": "com.hogan.novncclient",
     "productName": "NoVNC Client",
     "asar": true,
+    "asarUnpack": [
+      "build/**"
+    ],
     "win": {
       "target": "portable",
       "icon": "icon.ico"
