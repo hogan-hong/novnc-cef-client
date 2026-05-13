@@ -194,7 +194,7 @@ function createControlButtons (parentWin) {
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:180px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#hideBtn{background:#17a2b8}#hideBtn:hover{background:#138496}#hideBtn.active{background:#ffc107}#hideBtn.active:hover{background:#e0a800}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="hideBtn" onclick="toggleHide()">隐藏</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;let h=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='显示';b.classList.add('active')}else{b.textContent='隐藏';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:180px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#hideBtn{background:#ffc107}#hideBtn:hover{background:#e0a800}#hideBtn.active{background:#17a2b8}#hideBtn.active:hover{background:#138496}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="hideBtn" onclick="toggleHide()">显示</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;let h=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='隐藏';b.classList.add('active')}else{b.textContent='显示';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -950,16 +950,7 @@ function createVNCWindows (config, groupIndex) {
   const delayArg = process.argv.find(a => a.startsWith('--delay='))
   const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
   console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
-
-  // ★ 读取命令行参数 --hidden=1，启动时隐藏所有窗口，但保持GPU渲染
-  // 用法: novnc-cef-client.exe --hidden=1
-  const hiddenArg = process.argv.find(a => a.startsWith('--hidden='))
-  const startHidden = hiddenArg ? (parseInt(hiddenArg.split('=')[1]) || 0) === 1 : false
-  if (startHidden) {
-    console.log('启动模式: 隐藏窗口 (GPU渲染继续，窗口可由大漠抓图)')
-  } else {
-    console.log('启动模式: 显示窗口')
-  }
+  console.log(`启动模式: 透明穿透隐身窗口 (GPU渲染持续运行，大漠可绑句柄抓图)`)
 
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
@@ -969,7 +960,7 @@ function createVNCWindows (config, groupIndex) {
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
       resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: true, backgroundColor: '#000000',  // ★ 先显示，让GPU渲染初始化
+      useContentSize: true, show: false, backgroundColor: '#000000',  // ★ 默认隐藏（透明穿透隐身窗口）
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
@@ -1037,34 +1028,29 @@ function createVNCWindows (config, groupIndex) {
           updateControlButtons()
         }, 3000)
       }
-
-      // ★ 延迟输出窗口信息，等待窗口句柄完全初始化
-      setTimeout(() => {
-        const hwndBuf = win.getNativeWindowHandle()
-        let hwndDec
-        if (hwndBuf.length === 8) {
-          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
-          hwndDec = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
-        } else {
-          hwndDec = hwndBuf.readUInt32LE(0)
-        }
-        // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
-        console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
-
-        // ★ 如果是隐藏启动模式，延迟2秒后移动窗口到屏幕外
-        // 必须先让GPU渲染初始化，才能保证大漠抓图正常
-        if (startHidden) {
-          setTimeout(() => {
-            win.setPosition(-9999, -9999)
-            console.log(`窗口 ${i + 1}: 已移到屏幕外，GPU渲染继续运行`)
-          }, 2000)
-        }
-      }, 1000)
     })
 
     win.on('resize', () => refreshCanvasInfo(win, i))
     win.loadURL(item.url)
     vncWindows.push(win)
+
+    // ★ 鼠标穿透，窗口完全不可交互，不影响其他窗口操作
+    win.setIgnoreMouseEvents(true)
+
+    // ★ 延迟输出窗口信息，等待窗口句柄完全初始化
+    setTimeout(() => {
+      const hwndBuf = win.getNativeWindowHandle()
+      let hwndDec
+      if (hwndBuf.length === 8) {
+        const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+        hwndDec = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
+      } else {
+        hwndDec = hwndBuf.readUInt32LE(0)
+      }
+      // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
+      console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
+    }, 1000)
+
     return win
   }
 
@@ -1132,28 +1118,19 @@ ipcMain.on('toggle-control', (event, enabled) => {
   }
 })
 
-// ★ 隐藏模式切换：点击右下角"隐藏/显示"按钮
-// 使用setPosition移到屏幕外而不是hide()，保持GPU渲染循环运行
+// ★ 隐藏模式切换：点击右下角"显示/隐藏"按钮
+// 透明穿透隐身窗口模式：默认隐身（show: false + ignoreMouseEvents）
+// 点击按钮可以临时显示窗口用于调试，或再次隐藏
 ipcMain.on('toggle-hide', (event, enabled) => {
   hideMode = enabled
   let affected = 0
-  vncWindows.forEach((win, i) => {
+  vncWindows.forEach(win => {
     if (win && !win.isDestroyed()) {
-      if (hideMode) {
-        // ★ 移动窗口到屏幕外，而不是隐藏，保持GPU渲染循环运行
-        win.setPosition(-9999, -9999)
-      } else {
-        // ★ 恢复窗口到原位置
-        const col = i % cols
-        const row = Math.floor(i / cols)
-        const x = offsetX + col * winW
-        const y = row * winH
-        win.setPosition(x, y)
-      }
+      hideMode ? win.show() : win.hide()
       affected++
     }
   })
-  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已移出屏幕，GPU渲染继续)' : 'OFF (所有窗口已恢复原位置)'}，影响 ${affected} 个窗口`)
+  console.log(`窗口显示 ${hideMode ? 'ON (所有窗口已显示)' : 'OFF (所有窗口已隐身，GPU渲染继续运行)'}，影响 ${affected} 个窗口`)
 })
 
 ipcMain.on('exit-app', () => {
