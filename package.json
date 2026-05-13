@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "npm run build:native || echo 'native模块编译失败，继续打包' && electron-builder --win --publish never",
+    "build:win": "npm run build:native || echo 'native模块编译失败，继续打包' && electron-builder --win --publish never --config.compression=store",
     "build:native": "node-gyp rebuild || true",
     "rebuild": "npm run build:native"
   },
@@ -16,14 +16,17 @@
     "asarUnpack": [
       "build/**"
     ],
+    "files": [
+      "**/*",
+      "!*.md",
+      "!binding.gyp"
+    ],
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "resources"
     },
     "win": {
-      "target": [
-        "portable",
-        "dir"
-      ]
+      "target": "nsis"
     }
   },
   "keywords": [],
