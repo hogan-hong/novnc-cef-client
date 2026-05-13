@@ -117,6 +117,41 @@ type Log.txt
 ...
 ```
 
+## 编译问题修复
+
+### 问题：添加native模块后编译失败
+
+**原因**：native模块使用了Windows GDI函数，但缺少`gdi32.lib`链接库。
+
+**修复内容**：
+- 添加`gdi32.lib`链接库到binding.gyp
+- 添加Windows编译器配置（禁用C++异常）
+
+**验证方法**：
+```bash
+npm run build:native
+# 应该看到：
+# gyp info ok
+# 或者没有错误
+```
+
+如果编译成功，会生成：
+```
+build/Release/osr_helper.node
+```
+
+### 如果native模块编译失败
+
+可以跳过native模块，直接构建：
+
+```bash
+# 只构建JS部分，不编译native模块
+npm install
+npm run build:win
+```
+
+应用会继续运行，但OSR绘制功能会被跳过（日志会提示"[OSR] native模块不可用"）。
+
 ## 常见问题
 
 ### Q1: npm install失败
