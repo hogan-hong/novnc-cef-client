@@ -969,7 +969,7 @@ function createVNCWindows (config, groupIndex) {
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
       resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: !startHidden, backgroundColor: '#000000',  // ★ 根据--hidden参数决定是否显示
+      useContentSize: true, show: true, backgroundColor: '#000000',  // ★ 先显示，让GPU渲染初始化
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
@@ -1050,6 +1050,15 @@ function createVNCWindows (config, groupIndex) {
         }
         // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
         console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
+
+        // ★ 如果是隐藏启动模式，延迟2秒后移动窗口到屏幕外
+        // 必须先让GPU渲染初始化，才能保证大漠抓图正常
+        if (startHidden) {
+          setTimeout(() => {
+            win.setPosition(-9999, -9999)
+            console.log(`窗口 ${i + 1}: 已移到屏幕外，GPU渲染继续运行`)
+          }, 2000)
+        }
       }, 1000)
     })
 
@@ -1124,16 +1133,27 @@ ipcMain.on('toggle-control', (event, enabled) => {
 })
 
 // ★ 隐藏模式切换：点击右下角"隐藏/显示"按钮
+// 使用setPosition移到屏幕外而不是hide()，保持GPU渲染循环运行
 ipcMain.on('toggle-hide', (event, enabled) => {
   hideMode = enabled
   let affected = 0
-  vncWindows.forEach(win => {
+  vncWindows.forEach((win, i) => {
     if (win && !win.isDestroyed()) {
-      hideMode ? win.hide() : win.show()
+      if (hideMode) {
+        // ★ 移动窗口到屏幕外，而不是隐藏，保持GPU渲染循环运行
+        win.setPosition(-9999, -9999)
+      } else {
+        // ★ 恢复窗口到原位置
+        const col = i % cols
+        const row = Math.floor(i / cols)
+        const x = offsetX + col * winW
+        const y = row * winH
+        win.setPosition(x, y)
+      }
       affected++
     }
   })
-  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已隐藏，GPU渲染继续)' : 'OFF (所有窗口已显示)'}，影响 ${affected} 个窗口`)
+  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已移出屏幕，GPU渲染继续)' : 'OFF (所有窗口已恢复原位置)'}，影响 ${affected} 个窗口`)
 })
 
 ipcMain.on('exit-app', () => {
