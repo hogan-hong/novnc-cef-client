@@ -50,6 +50,7 @@ app.commandLine.appendSwitch('enable-zero-copy')
 
 // ========== 全局状态 ==========
 let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
+let hideMode = false           // 隐藏模式：隐藏所有VNC窗口，但保持GPU渲染
 let currentGroupIndex = 1
 const vncWindows = []
 let apiServer = null
@@ -182,18 +183,18 @@ function showGroupSelector (config) {
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
-// ========== 右下角控制栏（控制 + 退出）==========
+// ========== 右下角控制栏（控制 + 隐藏 + 退出）==========
 function createControlButtons (parentWin) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
-    x: workArea.width - 130, y: workArea.height - 40,
-    width: 120, height: 30,
+    x: workArea.width - 190, y: workArea.height - 40,
+    width: 180, height: 30,
     frame: false, transparent: true, parent: parentWin,
     alwaysOnTop: false, skipTaskbar: true, resizable: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:2px}button{width:59px;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:180px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#hideBtn{background:#17a2b8}#hideBtn:hover{background:#138496}#hideBtn.active{background:#ffc107}#hideBtn.active:hover{background:#e0a800}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="hideBtn" onclick="toggleHide()">隐藏</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;let h=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='显示';b.classList.add('active')}else{b.textContent='隐藏';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -579,45 +580,6 @@ function startAPIServer (groupIndex, config) {
       return
     }
 
-    // ★ 显示/隐藏窗口（用于大漠DX抓图场景）
-    if (req.method === 'POST' && req.url === '/visibility') {
-      let body = ''
-      req.on('data', chunk => { body += chunk.toString() })
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body)
-          const targetIdx = (data.windowIndex || 0) - 1  // 1-based → 0-based，0表示所有窗口
-          const show = data.show !== false  // 默认为显示
-          let affected = 0
-
-          if (targetIdx >= 0 && targetIdx < vncWindows.length) {
-            // 控制指定窗口
-            const win = vncWindows[targetIdx]
-            if (win && !win.isDestroyed()) {
-              show ? win.show() : win.hide()
-              affected = 1
-            }
-          } else if (targetIdx === -1) {
-            // 控制所有窗口
-            vncWindows.forEach(win => {
-              if (win && !win.isDestroyed()) {
-                show ? win.show() : win.hide()
-                affected++
-              }
-            })
-          }
-
-          console.log(`窗口可见性控制: show=${show}, affected=${affected}`)
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: true, show, affected }))
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end('{"ok":false}')
-        }
-      })
-      return
-    }
-
     // ★ 同步事件接收
     if (req.method === 'POST' && req.url === '/sync') {
       let body = ''
@@ -989,12 +951,6 @@ function createVNCWindows (config, groupIndex) {
   const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
   console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
 
-  // ★ 读取命令行参数 --hidden=1，隐藏所有窗口（适合大漠DX抓图）
-  // 用法: novnc-cef-client.exe --hidden=1
-  const hiddenArg = process.argv.find(a => a.startsWith('--hidden='))
-  const hideWindows = hiddenArg ? hiddenArg.split('=')[1] !== '0' : false
-  console.log(`窗口隐藏模式: ${hideWindows ? '开启 (隐藏所有VNC窗口)' : '关闭 (正常显示)'} (支持--hidden=1/0参数)`)
-
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
@@ -1003,7 +959,7 @@ function createVNCWindows (config, groupIndex) {
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
       resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: !hideWindows, backgroundColor: '#000000',  // ★ 支持隐藏窗口模式
+      useContentSize: true, show: true, backgroundColor: '#000000',  // ★ 默认显示
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
@@ -1141,6 +1097,19 @@ ipcMain.on('toggle-control', (event, enabled) => {
     removeControlButtons()
     console.log('控制模式 OFF，同步已停止')
   }
+})
+
+// ★ 隐藏模式切换：点击右下角"隐藏/显示"按钮
+ipcMain.on('toggle-hide', (event, enabled) => {
+  hideMode = enabled
+  let affected = 0
+  vncWindows.forEach(win => {
+    if (win && !win.isDestroyed()) {
+      hideMode ? win.hide() : win.show()
+      affected++
+    }
+  })
+  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已隐藏，GPU渲染继续)' : 'OFF (所有窗口已显示)'}，影响 ${affected} 个窗口`)
 })
 
 ipcMain.on('exit-app', () => {
