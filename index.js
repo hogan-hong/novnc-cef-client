@@ -30,7 +30,7 @@ console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof 
 // 启动时清空旧日志
 try { fs.writeFileSync(logPath, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8') } catch (e) {}
 
-// ========== 禁用 DirectComposition，保证GDI截图不黑屏 ==========
+// 禁用 DirectComposition，保证GDI截图不黑屏
 app.commandLine.appendSwitch('disable-direct-composition')
 app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('enable-gpu')
@@ -44,6 +44,9 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 // ★ 关闭音频服务，VNC不需要声音，省一个Utility进程
 app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess')
 app.commandLine.appendSwitch('mute-audio')
+// ★ 隐藏窗口优化：保持GPU渲染和事件处理
+app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder')
+app.commandLine.appendSwitch('enable-zero-copy')
 
 // ========== 全局状态 ==========
 let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
@@ -576,6 +579,45 @@ function startAPIServer (groupIndex, config) {
       return
     }
 
+    // ★ 显示/隐藏窗口（用于大漠DX抓图场景）
+    if (req.method === 'POST' && req.url === '/visibility') {
+      let body = ''
+      req.on('data', chunk => { body += chunk.toString() })
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body)
+          const targetIdx = (data.windowIndex || 0) - 1  // 1-based → 0-based，0表示所有窗口
+          const show = data.show !== false  // 默认为显示
+          let affected = 0
+
+          if (targetIdx >= 0 && targetIdx < vncWindows.length) {
+            // 控制指定窗口
+            const win = vncWindows[targetIdx]
+            if (win && !win.isDestroyed()) {
+              show ? win.show() : win.hide()
+              affected = 1
+            }
+          } else if (targetIdx === -1) {
+            // 控制所有窗口
+            vncWindows.forEach(win => {
+              if (win && !win.isDestroyed()) {
+                show ? win.show() : win.hide()
+                affected++
+              }
+            })
+          }
+
+          console.log(`窗口可见性控制: show=${show}, affected=${affected}`)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, show, affected }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end('{"ok":false}')
+        }
+      })
+      return
+    }
+
     // ★ 同步事件接收
     if (req.method === 'POST' && req.url === '/sync') {
       let body = ''
@@ -947,6 +989,12 @@ function createVNCWindows (config, groupIndex) {
   const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
   console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
 
+  // ★ 读取命令行参数 --hidden=1，隐藏所有窗口（适合大漠DX抓图）
+  // 用法: novnc-cef-client.exe --hidden=1
+  const hiddenArg = process.argv.find(a => a.startsWith('--hidden='))
+  const hideWindows = hiddenArg ? hiddenArg.split('=')[1] !== '0' : false
+  console.log(`窗口隐藏模式: ${hideWindows ? '开启 (隐藏所有VNC窗口)' : '关闭 (正常显示)'} (支持--hidden=1/0参数)`)
+
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
@@ -955,11 +1003,10 @@ function createVNCWindows (config, groupIndex) {
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
       resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: true, backgroundColor: '#000000',
+      useContentSize: true, show: !hideWindows, backgroundColor: '#000000',  // ★ 支持隐藏窗口模式
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
-        backgroundThrottling: false,
-        nodeIntegration: false, contextIsolation: true
+        backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
       }
     })
 
