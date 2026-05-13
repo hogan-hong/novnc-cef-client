@@ -21,12 +21,18 @@
       "!*.md",
       "!binding.gyp"
     ],
+    "extraFiles": [
+      "配置文件.int"
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "resources"
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "portable"
+      ]
     }
   },
   "keywords": [],

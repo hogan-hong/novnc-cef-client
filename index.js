@@ -5,7 +5,7 @@ const { execFile } = require('child_process')
 const http = require('http')
 
 // ========== 日志写入同目录Log.txt（异步缓冲，避免磁盘IO阻塞）==========
-const logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
+let logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
 const origLog = console.log
 const origErr = console.error
 let _logBuffer = []
@@ -23,12 +23,23 @@ function flushLog () {
   const data = _logBuffer.join('')
   _logBuffer = []
   // 异步写磁盘，不阻塞
-  fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, () => {})
+  fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, (err) => {
+    if (!err || logPath.includes(app.getPath('userData'))) return
+    logPath = path.join(app.getPath('userData'), 'Log.txt')
+    fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, () => {})
+  })
 }
 console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
 console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
 // 启动时清空旧日志
 try { fs.writeFileSync(logPath, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8') } catch (e) {}
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err && (err.stack || err.message || err))
+  try {
+    require('electron').dialog.showErrorBox('启动失败', err && (err.stack || err.message || String(err)))
+  } catch (e) {}
+})
 
 // 禁用 DirectComposition，保证GDI截图不黑屏
 app.commandLine.appendSwitch('disable-direct-composition')
@@ -82,6 +93,13 @@ function readConfig () {
     }
   } else {
     configPath = path.join(path.dirname(app.getPath('exe')), '配置文件.int')
+    if (!fs.existsSync(configPath)) {
+      const bundledPath = path.join(__dirname, '配置文件.int')
+      if (fs.existsSync(bundledPath)) {
+        console.log(`exe同目录未找到配置文件，使用内置默认配置: ${bundledPath}`)
+        configPath = bundledPath
+      }
+    }
   }
   if (!fs.existsSync(configPath)) {
     require('electron').dialog.showErrorBox('配置文件不存在', `未找到配置文件！\n路径: ${configPath}\n请将 配置文件.int 放在exe同目录下，或通过 --config=路径 指定`)
