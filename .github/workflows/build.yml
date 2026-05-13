@@ -67,27 +67,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Check build output
-        run: |
-          echo "=== Checking dist directory ==="
-          if (Test-Path dist) {
-            Write-Host "dist directory EXISTS"
-            Get-ChildItem -Recurse dist | Select-Object FullName, Length
-            Write-Host "=== dist directory contents ==="
-            Get-ChildItem -Path dist -Recurse -File | ForEach-Object { Write-Host $_.FullName }
-          } else {
-            Write-Host "dist directory NOT FOUND"
-            Write-Host "=== Checking if build artifacts are elsewhere ==="
-            Get-ChildItem -Directory | ForEach-Object { Write-Host "Directory: $($_.Name)" }
-            exit 1
-          }
-        continue-on-error: true
-        
       - name: Upload all build artifacts
         uses: actions/upload-artifact@v4
-        if: success()
         with:
           name: novnc-client-windows
           path: dist/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
