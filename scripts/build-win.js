@@ -19,16 +19,11 @@ if (nativeStatus !== 0) {
   console.warn("Native addon build failed; continuing with app packaging.");
 }
 
-const builderStatus = run(
-  process.execPath,
-  [
-    require.resolve("electron-builder/cli/cli"),
-    "--win",
-    "--publish",
-    "never",
-    "--config.compression=store",
-  ],
-  { shell: false }
-);
+const builderStatus = run("electron-builder", [
+  "--win",
+  "--publish",
+  "never",
+  "--config.compression=store",
+]);
 
 process.exit(builderStatus);
