@@ -19,7 +19,11 @@
     "files": [
       "**/*",
       "!*.md",
-      "!binding.gyp"
+      "!binding.gyp",
+      "!配置文件.int"
+    ],
+    "extraResources": [
+      "配置文件.int"
     ],
     "extraFiles": [
       "配置文件.int"
