@@ -1103,13 +1103,23 @@ ipcMain.on('toggle-control', (event, enabled) => {
 ipcMain.on('toggle-hide', (event, enabled) => {
   hideMode = enabled
   let affected = 0
-  vncWindows.forEach(win => {
+  vncWindows.forEach((win, i) => {
     if (win && !win.isDestroyed()) {
-      hideMode ? win.hide() : win.show()
+      if (hideMode) {
+        // ★ 移动窗口到屏幕外，而不是隐藏，保持GPU渲染循环运行
+        win.setPosition(-9999, -9999)
+      } else {
+        // ★ 恢复窗口到原位置
+        const col = i % cols
+        const row = Math.floor(i / cols)
+        const x = offsetX + col * winW
+        const y = row * winH
+        win.setPosition(x, y)
+      }
       affected++
     }
   })
-  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已隐藏，GPU渲染继续)' : 'OFF (所有窗口已显示)'}，影响 ${affected} 个窗口`)
+  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已移出屏幕，GPU渲染继续)' : 'OFF (所有窗口已恢复原位置)'}，影响 ${affected} 个窗口`)
 })
 
 ipcMain.on('exit-app', () => {
