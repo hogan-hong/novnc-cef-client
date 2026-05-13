@@ -52,10 +52,16 @@ app.commandLine.appendSwitch('enable-zero-copy')
 let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
 let hideMode = false           // 隐藏模式：隐藏所有VNC窗口，但保持GPU渲染
 let currentGroupIndex = 1
-const vncWindows = []
+const vncWindows = []          // 辅助窗口数组（大漠绑定这些窗口）
+const osrWindows = []          // OSR离屏浏览器窗口数组
+const windowDrawTimes = []     // 每个窗口的最后一次绘制时间（限帧）
 let apiServer = null
 let controlBarWindow = null    // 右下角控制栏窗口
 let selectWindow = null
+
+// OSR配置：固定帧率，降低CPU/GPU负载
+const OSR_FRAME_RATE = 15
+const OSR_FRAME_INTERVAL = 1000 / OSR_FRAME_RATE
 
 // ★ 主控窗口索引，-1=无主控，≥0=主控窗口索引
 // 只有主控窗口的输入会同步到其他窗口
@@ -201,7 +207,7 @@ function createControlButtons (parentWin) {
 // ★★★ 同步事件捕获注入（按需注入，关闭控制时移除）★★★
 function injectSyncCapture () {
   const apiPort = 38980 + currentGroupIndex
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       (function() {
@@ -287,7 +293,7 @@ function removeSyncCapture () {
 
 // ========== 控制按钮：在每个VNC窗口内注入（主控 + 刷新）==========
 function injectControlButtons () {
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       (function() {
@@ -361,7 +367,7 @@ function injectControlButtons () {
 }
 
 function removeControlButtons () {
-  vncWindows.forEach((win) => {
+  osrWindows.forEach((win) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       var bar = document.getElementById('__novnc_control_bar');
@@ -371,7 +377,7 @@ function removeControlButtons () {
 }
 
 function updateControlButtons () {
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     const isMaster = i === masterWindowIndex
     win.webContents.executeJavaScript(`
@@ -458,7 +464,7 @@ function forwardMouseEvent (sourceIdx, data) {
 
   const { eventType, x: vncX, y: vncY, button } = data
 
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
 
@@ -482,7 +488,7 @@ function forwardKeyEvent (sourceIdx, data) {
   if (!controlMode || masterWindowIndex < 0) return
   if (sourceIdx !== masterWindowIndex) return
 
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (data.eventType === 'keydown') {
       win.webContents.sendInputEvent({ type: 'keyDown', keyCode: data.key, code: data.code })
@@ -497,7 +503,7 @@ function forwardWheelEvent (sourceIdx, data) {
   if (!controlMode || masterWindowIndex < 0) return
   if (sourceIdx !== masterWindowIndex) return
 
-  vncWindows.forEach((win, i) => {
+  osrWindows.forEach((win, i) => {
     if (i === sourceIdx || !win || win.isDestroyed()) return
     if (!canvasInfoCache[i]) refreshCanvasInfo(win, i)
 
@@ -563,8 +569,8 @@ function startAPIServer (groupIndex, config) {
         try {
           const data = JSON.parse(body)
           const refreshIdx = (data.windowIndex || 1) - 1  // 1-based → 0-based
-          if (refreshIdx >= 0 && refreshIdx < vncWindows.length) {
-            const refreshWin = vncWindows[refreshIdx]
+          if (refreshIdx >= 0 && refreshIdx < osrWindows.length) {
+            const refreshWin = osrWindows[refreshIdx]
             if (refreshWin && !refreshWin.isDestroyed()) {
               console.log(`刷新窗口 ${refreshIdx + 1} 画面`)
               refreshWin.webContents.reload()
@@ -624,7 +630,7 @@ function startAPIServer (groupIndex, config) {
     if (req.method === 'GET' && req.url.startsWith('/diag')) {
       const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
       const diagIdx = parseInt(urlObj.searchParams.get('win') || '1') - 1  // 1-based → 0-based
-      const diagWin = vncWindows[diagIdx]
+      const diagWin = osrWindows[diagIdx]
       if (!diagWin || diagWin.isDestroyed()) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({error: 'window not found'}))
@@ -658,7 +664,7 @@ function startAPIServer (groupIndex, config) {
     if (req.method === 'GET' && req.url.startsWith('/devtools')) {
       const urlObj = new URL(req.url, `http://127.0.0.1:${port}`)
       const devIdx = parseInt(urlObj.searchParams.get('win') || '1') - 1  // 1-based → 0-based
-      const devWin = vncWindows[devIdx]
+      const devWin = osrWindows[devIdx]
       if (devWin && !devWin.isDestroyed()) {
         devWin.webContents.openDevTools()
         res.writeHead(200, { 'Content-Type': 'text/plain' })
@@ -674,7 +680,7 @@ function startAPIServer (groupIndex, config) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
         success: true,
-        windowCount: vncWindows.length,
+        windowCount: osrWindows.length,
         control: controlMode,
         master: masterWindowIndex,
         sync: controlMode && masterWindowIndex >= 0,
@@ -702,7 +708,7 @@ function cancelDrag (winIdx) {
   state.timers.length = 0
   if (!state.resolved) {
     state.resolved = true
-    const win = vncWindows[winIdx]
+    const win = osrWindows[winIdx]
     if (win && !win.isDestroyed()) {
       const lastX = state.lastX != null ? state.lastX : 0
       const lastY = state.lastY != null ? state.lastY : 0
@@ -723,14 +729,14 @@ async function handleControlCommand (data) {
       const num = parseInt(ch)
       // 1-based → 0-based内部索引
       const idx = num - 1
-      if (!isNaN(num) && num >= 1 && idx < vncWindows.length) {
+      if (!isNaN(num) && num >= 1 && idx < osrWindows.length) {
         indices.push(idx)
       }
     }
   } else if (typeof wi === 'number') {
     // 兼容旧版：数字0当作窗口1，数字1+直接用
     const idx = wi <= 0 ? 0 : wi - 1
-    if (idx >= 0 && idx < vncWindows.length) indices.push(idx)
+    if (idx >= 0 && idx < osrWindows.length) indices.push(idx)
   } else {
     indices.push(0) // 默认窗口1
   }
@@ -738,7 +744,7 @@ async function handleControlCommand (data) {
   // 去重
   indices = [...new Set(indices)]
   for (const idx of indices) {
-    const win = vncWindows[idx]
+    const win = osrWindows[idx]
     if (!win || win.isDestroyed()) continue
     sendToVNC(idx, data)
   }
@@ -748,7 +754,7 @@ async function handleControlCommand (data) {
 // ★★★ sendToVNC: API控制 → VNC窗口 ★★★
 // 固定横屏 856×480 → 1334×750，纯数学算viewport，不依赖canvas缓存
 function sendToVNC (winIdx, data) {
-  const win = vncWindows[winIdx]
+  const win = osrWindows[winIdx]
   if (!win || win.isDestroyed()) return
   const { action, x, y, deltaY, deltaX, text, code, down } = data
 
@@ -950,31 +956,42 @@ function createVNCWindows (config, groupIndex) {
   const delayArg = process.argv.find(a => a.startsWith('--delay='))
   const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
   console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
-  console.log(`启动模式: 透明穿透隐身窗口 (GPU渲染持续运行，大漠可绑句柄抓图)`)
+  console.log(`启动模式: OSR离屏渲染 + 自建辅助窗口 (GPU加速+限帧15fps，大漠绑定辅助窗口)`)
 
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
 
-    const win = new BrowserWindow({
-      x, y, width: winW, height: winH,
-      frame: false, transparent: true, title: item.title,
-      resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: false, backgroundColor: '#000000',  // ★ 默认隐藏（透明穿透隐身窗口）
+    // ========== 第1步：创建OSR离屏浏览器窗口 ==========
+    // 无任何可见Win32窗口、不接入DWM桌面合成
+    const osrWin = new BrowserWindow({
+      x: -9999, y: -9999,  // 移出屏幕
+      width: winW, height: winH,
+      offscreen: true,     // ★ 纯离屏渲染，不创建可视桌面窗口
+      show: false,
+      frame: false,
+      transparent: false,  // 禁止透明分层（OSR本身不需要）
       webPreferences: {
-        webgl: true, hardwareAcceleration: true, offscreen: false,
-        backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
+        hardwareAcceleration: true,
+        webgl: true,
+        backgroundThrottling: false,  // 禁止Electron后台冻结、降频、休眠页面
+        nodeIntegration: false,
+        contextIsolation: true
       }
     })
 
-    win.setMenu(null)
-    win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
+    // ★ 关键：限制OSR最大渲染帧率 10~20fps
+    if (osrWin.webContents.setFrameRate) {
+      osrWin.webContents.setFrameRate(OSR_FRAME_RATE)
+    }
 
-    // ★ 键盘同步捕获
-    win.webContents.on('before-input-event', (event, input) => {
+    osrWin.setMenu(null)
+
+    // ★ 键盘同步捕获（从OSR窗口捕获，转发到辅助窗口的输入）
+    osrWin.webContents.on('before-input-event', (event, input) => {
       if (!controlMode) return
       if (input.type !== 'keyDown' && input.type !== 'keyUp') return
-      const si = vncWindows.indexOf(win)
+      const si = osrWindows.indexOf(osrWin)
       if (si === -1) return
       forwardKeyEvent(si, {
         type: 'sync-key',
@@ -984,16 +1001,14 @@ function createVNCWindows (config, groupIndex) {
       })
     })
 
-    win.webContents.on('did-finish-load', () => {
-      setTimeout(() => setLayer2Title(win, item), 500)
+    osrWin.webContents.on('did-finish-load', () => {
+      // ★ 刷新 canvas 信息缓存（从OSR窗口获取）
+      refreshCanvasInfo(osrWin, i)
+      setTimeout(() => refreshCanvasInfo(osrWin, i), 2000)
+      setTimeout(() => refreshCanvasInfo(osrWin, i), 5000)
 
-      // ★ 刷新 canvas 信息缓存
-      refreshCanvasInfo(win, i)
-      setTimeout(() => refreshCanvasInfo(win, i), 2000)
-      setTimeout(() => refreshCanvasInfo(win, i), 5000)
-
-      // ★ 只保留右键菜单拦截（轻量），同步捕获代码在开启控制模式时才注入
-      win.webContents.executeJavaScript(`
+      // ★ 禁用 noVNC 的 setCapture 机制
+      osrWin.webContents.executeJavaScript(`
         (function() {
           var screen = document.getElementById('screen');
           if (!screen) return;
@@ -1002,11 +1017,9 @@ function createVNCWindows (config, groupIndex) {
             e.stopPropagation();
           }, true);
 
-          // ★ 禁用 noVNC 的 setCapture 机制
           var origSetCapture = Element.prototype.setCapture;
-          Element.prototype.setCapture = function() {
-            // no-op：不允许 capture，避免 proxy 干扰 sendInputEvent
-          };
+          Element.prototype.setCapture = function() {};
+
           if (document.captureElement !== undefined) {
             Object.defineProperty(document, 'captureElement', {
               get: function() { return null; },
@@ -1015,31 +1028,82 @@ function createVNCWindows (config, groupIndex) {
           }
         })()
       `).catch(() => {})
+    })
 
-      // ★ 控制模式开启时，重新注入控制按钮和同步捕获（刷新后页面重载需要重新注入）
-      if (controlMode) {
-        setTimeout(() => {
-          injectSyncCapture()
-          injectControlButtons()
-        }, 1000)
-        setTimeout(() => {
-          injectSyncCapture()
-          injectControlButtons()
-          updateControlButtons()
-        }, 3000)
+    osrWin.loadURL(item.url)
+    osrWindows.push(osrWin)
+
+    // ========== 第2步：创建自建辅助窗口 ==========
+    // 独立创建标准普通Win32隐藏窗口，不透明、不分层、不透明穿透
+    // 拥有正常Windows窗口句柄，正常参与DWM标准缓冲合成
+    const auxWin = new BrowserWindow({
+      x, y, width: winW, height: winH,
+      show: false,           // 默认隐藏
+      frame: false,          // 无边框
+      transparent: false,    // ★ 关键：禁止透明分层，保证DWM标准合成缓冲
+      backgroundColor: '#000000',
+      resizable: false,
+      skipTaskbar: true,     // 不显示在任务栏
+      title: item.title
+    })
+
+    // ★ 禁止鼠标穿透，维持标准窗口属性
+    auxWin.setIgnoreMouseEvents(false)
+
+    auxWin.setMenu(null)
+    auxWin.on('page-title-updated', (event) => { event.preventDefault(); auxWin.setTitle(item.title) })
+
+    // ====== 第3步：监听OSR paint事件，绘制到辅助窗口 ======
+    osrWin.webContents.on('paint', (event, dirtyRect, nativeImage) => {
+      if (!nativeImage) return
+
+      // 限帧：检查距离上次绘制是否超过间隔时间
+      const now = Date.now()
+      const lastDrawTime = windowDrawTimes[i] || 0
+      if (now - lastDrawTime < OSR_FRAME_INTERVAL) return
+
+      windowDrawTimes[i] = now
+
+      try {
+        // 尝试加载native模块
+        let drawBitmapToWindow
+        try {
+          const osrHelper = require('./build/Release/osr_helper.node')
+          drawBitmapToWindow = osrHelper.drawBitmapToWindow
+        } catch (e) {
+          // 如果native模块不可用，跳过绘制
+          console.log(`[OSR] 窗口 ${i + 1}: native模块未就绪，跳过绘制`)
+          return
+        }
+
+        if (!drawBitmapToWindow) return
+
+        // 转换NativeImage为Buffer
+        const bitmapBuffer = nativeImage.toBitmap()
+        if (!bitmapBuffer || bitmapBuffer.length === 0) return
+
+        // 获取辅助窗口句柄
+        const hwndBuf = auxWin.getNativeWindowHandle()
+        let hwnd
+        if (hwndBuf.length === 8) {
+          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+          hwnd = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
+        } else {
+          hwnd = hwndBuf.readUInt32LE(0)
+        }
+
+        // 通过GDI绘制到辅助窗口
+        drawBitmapToWindow(hwnd, winW, winH, bitmapBuffer)
+      } catch (e) {
+        console.error(`[OSR] 窗口 ${i + 1} 绘制失败:`, e.message)
       }
     })
 
-    win.on('resize', () => refreshCanvasInfo(win, i))
-    win.loadURL(item.url)
-    vncWindows.push(win)
+    vncWindows.push(auxWin)
 
-    // ★ 鼠标穿透，窗口完全不可交互，不影响其他窗口操作
-    win.setIgnoreMouseEvents(true)
-
-    // ★ 延迟输出窗口信息，等待窗口句柄完全初始化
+    // ========== 第4步：延迟输出窗口信息（输出辅助窗口的HWND）==========
     setTimeout(() => {
-      const hwndBuf = win.getNativeWindowHandle()
+      const hwndBuf = auxWin.getNativeWindowHandle()
       let hwndDec
       if (hwndBuf.length === 8) {
         const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
@@ -1047,11 +1111,12 @@ function createVNCWindows (config, groupIndex) {
       } else {
         hwndDec = hwndBuf.readUInt32LE(0)
       }
+
       // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
       console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
     }, 1000)
 
-    return win
+    return { osrWin, auxWin }
   }
 
   if (windowDelay > 0) {
@@ -1102,7 +1167,7 @@ ipcMain.on('toggle-control', (event, enabled) => {
   if (enabled) {
     // 开启控制模式：重置主控，注入同步捕获和控制按钮
     masterWindowIndex = -1  // 无主控，需手动选择
-    vncWindows.forEach((w, i) => refreshCanvasInfo(w, i))
+    osrWindows.forEach((w, i) => refreshCanvasInfo(w, i))
     injectSyncCapture()
     setTimeout(() => {
       injectControlButtons()
@@ -1119,8 +1184,8 @@ ipcMain.on('toggle-control', (event, enabled) => {
 })
 
 // ★ 隐藏模式切换：点击右下角"显示/隐藏"按钮
-// 透明穿透隐身窗口模式：默认隐身（show: false + ignoreMouseEvents）
-// 点击按钮可以临时显示窗口用于调试，或再次隐藏
+// OSR离屏渲染模式：默认隐藏辅助窗口（大漠绑定这些窗口）
+// 点击按钮可以临时显示辅助窗口用于调试，或再次隐藏
 ipcMain.on('toggle-hide', (event, enabled) => {
   hideMode = enabled
   let affected = 0
@@ -1130,7 +1195,7 @@ ipcMain.on('toggle-hide', (event, enabled) => {
       affected++
     }
   })
-  console.log(`窗口显示 ${hideMode ? 'ON (所有窗口已显示)' : 'OFF (所有窗口已隐身，GPU渲染继续运行)'}，影响 ${affected} 个窗口`)
+  console.log(`${hideMode ? '显示' : '隐藏'} ${affected} 个辅助窗口`)
 })
 
 ipcMain.on('exit-app', () => {

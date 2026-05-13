@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win --publish never"
+    "build:win": "electron-builder --win --publish never",
+    "build:native": "node-gyp rebuild",
+    "rebuild": "npm run build:native"
   },
   "build": {
     "appId": "com.hogan.novncclient",
@@ -22,7 +24,9 @@
   "type": "commonjs",
   "devDependencies": {
     "electron": "^41.3.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "nan": "^2.20.0",
+    "node-gyp": "^11.0.0"
   },
   "dependencies": {
     "iconv-lite": "^0.7.2"
