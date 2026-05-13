@@ -20,12 +20,12 @@ jobs:
         run: npm run build:native || echo 'native模块编译失败，继续打包'
       - name: Build Windows portable exe
         run: npm run build:win
+      - name: List dist directory
+        run: dir dist /s
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         with:
           name: novnc-client-windows
-          path: |
-            dist/*.exe
-            dist/**/*.exe
+          path: dist/
           if-no-files-found: warn
           retention-days: 7
