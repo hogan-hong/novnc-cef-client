@@ -4,17 +4,31 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: build
+  cancel-in-progress: false
 
 jobs:
   build-windows:
-    runs-on: windows-2019  # 使用Windows Server 2019
+    runs-on: windows-latest  # 使用最新Windows runner
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18  # 使用Node 18，更稳定
+          node-version: '20'  # 使用Node 20 LTS
+          cache: 'npm'
+          
+      - name: Show environment info
+        run: |
+          node --version
+          npm --version
+          echo "OS: $env:OS"
           
       - name: Install dependencies
         run: |
@@ -31,28 +45,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
-      - name: List build outputs
+      - name: Check build output
         run: |
-          echo "=== dist directory ==="
-          if exist dist (
-            dir dist /s
-          ) else (
-            echo "dist directory NOT FOUND"
-          )
-          echo ""
-          echo "=== current directory ==="
-          dir
-        continue-on-error: true
+          echo "=== Checking dist directory ==="
+          if (Test-Path dist) {
+            Write-Host "dist directory EXISTS"
+            Get-ChildItem -Recurse dist | Select-Object FullName, Length
+          } else {
+            Write-Host "dist directory NOT FOUND"
+            exit 1
+          }
         
       - name: Upload all build artifacts
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: novnc-client-windows
-          path: |
-            dist/*.exe
-            dist/**/*.exe
-            dist/*.zip
-            dist/**/*.zip
+          path: dist/
           if-no-files-found: error
-          retention-days: 30
-        continue-on-error: true
+          retention-days: 7
