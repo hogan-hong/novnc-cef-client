@@ -1122,6 +1122,20 @@ function createVNCWindows (config, groupIndex) {
       `).catch(() => {})
     })
 
+    // ★ 调试：监听加载状态
+    osrWin.webContents.on('did-start-loading', () => {
+      console.log(`[窗口 ${i + 1}] 开始加载: ${item.url}`)
+    })
+
+    osrWin.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+      console.log(`[窗口 ${i + 1}] 加载失败: ${errorCode} - ${errorDescription}`)
+      console.log(`[窗口 ${i + 1}] URL: ${validatedURL}`)
+    })
+
+    osrWin.webContents.on('ready-to-show', () => {
+      console.log(`[窗口 ${i + 1}] 页面准备显示`)
+    })
+
     osrWin.loadURL(item.url)
     osrWindows.push(osrWin)
 
@@ -1147,13 +1161,20 @@ function createVNCWindows (config, groupIndex) {
 
     // ====== 第3步：监听OSR paint事件，绘制到辅助窗口 ======
     osrWin.webContents.on('paint', (event, dirtyRect, nativeImage) => {
-      console.log(`[OSR] 窗口 ${i + 1} paint 事件触发，nativeImage: ${nativeImage ? '有' : '无'}，尺寸: ${winW}x${winH}`)
-      if (!nativeImage) return
+      console.log(`[OSR] 窗口 ${i + 1} paint 事件触发`)
+      console.log(`[OSR] 窗口 ${i + 1}] nativeImage=${nativeImage ? '有' : '无/null'}，dirtyRect=${JSON.stringify(dirtyRect)}，期望尺寸: ${winW}x${winH}`)
+      if (!nativeImage) {
+        console.log(`[OSR] 窗口 ${i + 1}] nativeImage为空，跳过绘制`)
+        return
+      }
 
       // 限帧：检查距离上次绘制是否超过间隔时间
       const now = Date.now()
       const lastDrawTime = windowDrawTimes[i] || 0
-      if (now - lastDrawTime < OSR_FRAME_INTERVAL) return
+      if (now - lastDrawTime < OSR_FRAME_INTERVAL) {
+        console.log(`[OSR] 窗口 ${i + 1}] 限帧跳过（距离上次: ${now - lastDrawTime}ms < ${OSR_FRAME_INTERVAL}ms）`)
+        return
+      }
 
       windowDrawTimes[i] = now
 
