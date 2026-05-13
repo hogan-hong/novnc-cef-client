@@ -951,6 +951,16 @@ function createVNCWindows (config, groupIndex) {
   const windowDelay = delayArg ? parseInt(delayArg.split('=')[1]) || 0 : 0
   console.log(`窗口创建间隔: ${windowDelay}ms` + (windowDelay > 0 ? ' (逐个创建)' : ' (同时创建)'))
 
+  // ★ 读取命令行参数 --hidden=1，启动时隐藏所有窗口，但保持GPU渲染
+  // 用法: novnc-cef-client.exe --hidden=1
+  const hiddenArg = process.argv.find(a => a.startsWith('--hidden='))
+  const startHidden = hiddenArg ? (parseInt(hiddenArg.split('=')[1]) || 0) === 1 : false
+  if (startHidden) {
+    console.log('启动模式: 隐藏窗口 (GPU渲染继续，窗口可由大漠抓图)')
+  } else {
+    console.log('启动模式: 显示窗口')
+  }
+
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
     const x = offsetX + col * winW, y = row * winH
@@ -959,7 +969,7 @@ function createVNCWindows (config, groupIndex) {
       x, y, width: winW, height: winH,
       frame: false, transparent: true, title: item.title,
       resizable: false,  // ★ 禁止拖动边缘修改窗口大小
-      useContentSize: true, show: true, backgroundColor: '#000000',  // ★ 默认显示
+      useContentSize: true, show: !startHidden, backgroundColor: '#000000',  // ★ 根据--hidden参数决定是否显示
       webPreferences: {
         webgl: true, hardwareAcceleration: true, offscreen: false,
         backgroundThrottling: false, nodeIntegration: false, contextIsolation: true
@@ -1027,6 +1037,20 @@ function createVNCWindows (config, groupIndex) {
           updateControlButtons()
         }, 3000)
       }
+
+      // ★ 延迟输出窗口信息，等待窗口句柄完全初始化
+      setTimeout(() => {
+        const hwndBuf = win.getNativeWindowHandle()
+        let hwndHex
+        if (hwndBuf.length === 8) {
+          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+          hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
+        } else {
+          hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
+        }
+        // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(16进制)
+        console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=0x${hwndHex}`)
+      }, 1000)
     })
 
     win.on('resize', () => refreshCanvasInfo(win, i))
@@ -1103,23 +1127,13 @@ ipcMain.on('toggle-control', (event, enabled) => {
 ipcMain.on('toggle-hide', (event, enabled) => {
   hideMode = enabled
   let affected = 0
-  vncWindows.forEach((win, i) => {
+  vncWindows.forEach(win => {
     if (win && !win.isDestroyed()) {
-      if (hideMode) {
-        // ★ 移动窗口到屏幕外，而不是隐藏，保持GPU渲染循环运行
-        win.setPosition(-9999, -9999)
-      } else {
-        // ★ 恢复窗口到原位置
-        const col = i % cols
-        const row = Math.floor(i / cols)
-        const x = offsetX + col * winW
-        const y = row * winH
-        win.setPosition(x, y)
-      }
+      hideMode ? win.hide() : win.show()
       affected++
     }
   })
-  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已移出屏幕，GPU渲染继续)' : 'OFF (所有窗口已恢复原位置)'}，影响 ${affected} 个窗口`)
+  console.log(`隐藏模式 ${hideMode ? 'ON (所有窗口已隐藏，GPU渲染继续)' : 'OFF (所有窗口已显示)'}，影响 ${affected} 个窗口`)
 })
 
 ipcMain.on('exit-app', () => {
