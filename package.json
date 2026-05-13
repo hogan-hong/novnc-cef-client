@@ -17,8 +17,7 @@
       "build/**"
     ],
     "win": {
-      "target": "portable",
-      "icon": "icon.ico"
+      "target": "portable"
     }
   },
   "keywords": [],
