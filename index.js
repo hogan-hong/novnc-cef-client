@@ -92,7 +92,6 @@ app.commandLine.appendSwitch('enable-zero-copy')
 
 // ========== 全局状态 ==========
 let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
-let hideMode = false           // 隐藏模式：隐藏所有VNC窗口，但保持GPU渲染
 let currentGroupIndex = 1
 const vncWindows = []          // 辅助窗口数组（大漠绑定这些窗口）
 const osrWindows = []          // OSR离屏浏览器窗口数组
@@ -293,7 +292,7 @@ function createControlButtons (parentWin) {
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:180px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#hideBtn{background:#ffc107}#hideBtn:hover{background:#e0a800}#hideBtn.active{background:#17a2b8}#hideBtn.active:hover{background:#138496}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="hideBtn" onclick="toggleHide()">显示</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;let h=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='隐藏';b.classList.add('active')}else{b.textContent='显示';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='隐藏';b.classList.add('active')}else{b.textContent='显示';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -1131,7 +1130,7 @@ function createVNCWindows (config, groupIndex) {
     // 拥有正常Windows窗口句柄，正常参与DWM标准缓冲合成
     const auxWin = new BrowserWindow({
       x, y, width: winW, height: winH,
-      show: false,           // 默认隐藏
+      show: true,            // ★ 默认显示（大漠需要绑定这些窗口）
       frame: false,          // 无边框
       transparent: false,    // ★ 关键：禁止透明分层，保证DWM标准合成缓冲
       backgroundColor: '#000000',
@@ -1148,6 +1147,7 @@ function createVNCWindows (config, groupIndex) {
 
     // ====== 第3步：监听OSR paint事件，绘制到辅助窗口 ======
     osrWin.webContents.on('paint', (event, dirtyRect, nativeImage) => {
+      console.log(`[OSR] 窗口 ${i + 1} paint 事件触发，nativeImage: ${nativeImage ? '有' : '无'}，尺寸: ${winW}x${winH}`)
       if (!nativeImage) return
 
       // 限帧：检查距离上次绘制是否超过间隔时间
@@ -1175,6 +1175,7 @@ function createVNCWindows (config, groupIndex) {
                 osrHelperPath = path.join(app.getAppPath(), 'build', 'Release', 'osr_helper.node')
                 const osrHelper = require(osrHelperPath)
                 drawBitmapToWindow = osr_helper.drawBitmapToWindow
+              console.log(`[OSR] 窗口 ${i + 1}: native模块加载成功 (${osrHelperPath})`)
               } catch (e2) {
                 console.log(`[OSR] 窗口 ${i + 1}: native模块加载失败，跳过绘制 (${e1.message})`)
                 return
@@ -1309,20 +1310,6 @@ ipcMain.on('toggle-control', (event, enabled) => {
   }
 })
 
-// ★ 隐藏模式切换：点击右下角"显示/隐藏"按钮
-// OSR离屏渲染模式：默认隐藏辅助窗口（大漠绑定这些窗口）
-// 点击按钮可以临时显示辅助窗口用于调试，或再次隐藏
-ipcMain.on('toggle-hide', (event, enabled) => {
-  hideMode = enabled
-  let affected = 0
-  vncWindows.forEach(win => {
-    if (win && !win.isDestroyed()) {
-      hideMode ? win.show() : win.hide()
-      affected++
-    }
-  })
-  console.log(`${hideMode ? '显示' : '隐藏'} ${affected} 个辅助窗口`)
-})
 
 ipcMain.on('exit-app', () => {
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
