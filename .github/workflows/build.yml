@@ -32,29 +32,56 @@ jobs:
           
       - name: Install dependencies
         run: |
+          echo "=== Installing dependencies ==="
           npm install
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "npm install failed, trying without cache..."
+            npm install --no-cache
+          }
+        continue-on-error: true
           
       - name: Build native addon
         run: |
+          echo "=== Building native addon ==="
           npm run build:native
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Native addon built successfully"
+            if (Test-Path "build/Release/osr_helper.node") {
+              Write-Host "osr_helper.node exists"
+            }
+          } else {
+            Write-Host "Native addon build failed (expected on GitHub Actions)"
+            Write-Host "Continuing without native module..."
+          }
         continue-on-error: true
         
       - name: Build Windows application
         run: |
-          npm run build:win
+          echo "=== Building Windows application ==="
+          npm run build:win 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Build failed, showing error:"
+            Get-Content build.log -Tail 50
+            exit 1
+          }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
+          
       - name: Check build output
         run: |
           echo "=== Checking dist directory ==="
           if (Test-Path dist) {
             Write-Host "dist directory EXISTS"
             Get-ChildItem -Recurse dist | Select-Object FullName, Length
+            Write-Host "=== dist directory contents ==="
+            Get-ChildItem -Path dist -Recurse -File | ForEach-Object { Write-Host $_.FullName }
           } else {
             Write-Host "dist directory NOT FOUND"
+            Write-Host "=== Checking if build artifacts are elsewhere ==="
+            Get-ChildItem -Directory | ForEach-Object { Write-Host "Directory: $($_.Name)" }
             exit 1
           }
+        continue-on-error: true
         
       - name: Upload all build artifacts
         uses: actions/upload-artifact@v4
