@@ -4,8 +4,27 @@ const fs = require('fs')
 const { execFile } = require('child_process')
 const http = require('http')
 
-// ========== 日志写入同目录Log.txt（异步缓冲，避免磁盘IO阻塞）==========
-let logPath = path.join(path.dirname(app.getPath('exe')), 'Log.txt')
+// ========== 日志写入（优先exe同目录，失败则回退到用户目录/临时目录）==========
+function pickWritableLogPath () {
+  const dirs = [
+    path.dirname(app.getPath('exe')),
+    app.getPath('userData'),
+    path.join(app.getPath('temp'), 'NoVNC Client')
+  ]
+
+  for (const dir of dirs) {
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      const candidate = path.join(dir, 'Log.txt')
+      fs.writeFileSync(candidate, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8')
+      return candidate
+    } catch (e) {}
+  }
+
+  return path.join(path.dirname(app.getPath('exe')), 'Log.txt')
+}
+
+let logPath = pickWritableLogPath()
 const origLog = console.log
 const origErr = console.error
 let _logBuffer = []
@@ -22,23 +41,25 @@ function flushLog () {
   if (_logBuffer.length === 0) return
   const data = _logBuffer.join('')
   _logBuffer = []
-  // 异步写磁盘，不阻塞
   fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, (err) => {
-    if (!err || logPath.includes(app.getPath('userData'))) return
-    logPath = path.join(app.getPath('userData'), 'Log.txt')
+    if (!err) return
+    logPath = pickWritableLogPath()
     fs.writeFile(logPath, data, { flag: 'a', encoding: 'utf-8' }, () => {})
   })
 }
 console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
 console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
-// 启动时清空旧日志
-try { fs.writeFileSync(logPath, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8') } catch (e) {}
+console.log(`日志文件: ${logPath}`)
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err && (err.stack || err.message || err))
   try {
     require('electron').dialog.showErrorBox('启动失败', err && (err.stack || err.message || String(err)))
   } catch (e) {}
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason && (reason.stack || reason.message || reason))
 })
 
 // 禁用 DirectComposition，保证GDI截图不黑屏
