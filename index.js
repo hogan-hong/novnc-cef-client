@@ -1041,15 +1041,15 @@ function createVNCWindows (config, groupIndex) {
       // ★ 延迟输出窗口信息，等待窗口句柄完全初始化
       setTimeout(() => {
         const hwndBuf = win.getNativeWindowHandle()
-        let hwndHex
+        let hwndDec
         if (hwndBuf.length === 8) {
           const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
-          hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
+          hwndDec = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
         } else {
-          hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
+          hwndDec = hwndBuf.readUInt32LE(0)
         }
-        // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(16进制)
-        console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=0x${hwndHex}`)
+        // ★ 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
+        console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
       }, 1000)
     })
 
