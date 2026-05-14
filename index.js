@@ -1098,7 +1098,6 @@ function createVNCWindows (config, groupIndex) {
       transparent: false,    // ★ 关键：禁止透明分层，保证DWM标准合成缓冲
       backgroundColor: '#000000',
       resizable: false,
-      skipTaskbar: true,     // 不显示在任务栏
       title: item.title
     })
 
