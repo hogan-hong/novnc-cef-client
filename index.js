@@ -295,14 +295,14 @@ function showGroupSelector (config) {
 function createControlButtons (parentWin) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
-    x: workArea.width - 190, y: workArea.height - 40,
-    width: 180, height: 30,
+    x: workArea.width - 130, y: workArea.height - 40,
+    width: 120, height: 30,
     frame: false, transparent: true, parent: parentWin,
     alwaysOnTop: false, skipTaskbar: true, resizable: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:2px}button{flex:1;height:30px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function toggleHide(){h=!h;const b=document.getElementById('hideBtn');if(h){b.textContent='隐藏';b.classList.add('active')}else{b.textContent='显示';b.classList.remove('active')}ipcRenderer.send('toggle-hide',h)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:120px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:56px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -1365,9 +1365,34 @@ ipcMain.on('toggle-control', (event, enabled) => {
 
 
 ipcMain.on('exit-app', () => {
-  vncWindows.forEach(w => { try { w.destroy() } catch (e) {} }); vncWindows.length = 0
+  // 清除所有 capturePage 定时器
+  osrWindows.forEach(w => {
+    if (w && w.captureInterval) {
+      clearInterval(w.captureInterval)
+      w.captureInterval = null
+    }
+  })
+  
+  // 关闭所有 OSR 窗口
+  osrWindows.forEach(w => { try { w.destroy() } catch (e) {} })
+  osrWindows.length = 0
+  
+  // 关闭所有辅助窗口
+  auxWindows.forEach(w => { try { w.destroy() } catch (e) {} })
+  auxWindows.length = 0
+  
+  // 关闭 VNC 窗口
+  vncWindows.forEach(w => { try { w.destroy() } catch (e) {} })
+  vncWindows.length = 0
+  
+  // 关闭控制栏
   if (controlBarWindow) { try { controlBarWindow.destroy() } catch (e) {} controlBarWindow = null }
+  
+  // 关闭 API 服务器
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
-  app.quit(); process.exit(0)
+  
+  // 退出应用
+  app.quit()
+  process.exit(0)
 })
 app.on('window-all-closed', () => {})
