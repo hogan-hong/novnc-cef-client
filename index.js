@@ -292,7 +292,7 @@ function showGroupSelector (config) {
 }
 
 // ========== 右下角控制栏（控制 + 刷新 + 退出）==========
-function createControlButtons (parentWin, windowCount = 5) {
+function createControlButtons (parentWin, windowCount = 5, windowTitles = []) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
     x: workArea.width - 150, y: workArea.height - 40,
@@ -302,7 +302,7 @@ function createControlButtons (parentWin, windowCount = 5) {
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:140px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:40px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;white-space:nowrap}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#refreshAllBtn{background:#007bff;display:none}#refreshAllBtn:hover{background:#0069d9}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="refreshAllBtn" onclick="refreshAll()">刷新全部</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');const r=document.getElementById('refreshAllBtn');if(c){b.textContent='关闭控制';b.classList.add('active');r.style.display='block'}else{b.textContent='控制';b.classList.remove('active');r.style.display='none'}ipcRenderer.send('toggle-control',c)}function refreshAll(){const apiPort=38980+${currentGroupIndex};const input=prompt('请输入窗口编号（1-${windowCount}）刷新单个窗口，或留空刷新全部');if(input===null)return;const num=parseInt(input.trim());if(isNaN(num)||num<1||num>${windowCount}){if(input.trim()!==''){alert('无效的窗口编号，必须是 1-${windowCount} 之间的数字');return}console.log('刷新所有窗口');for(let i=1;i<=${windowCount};i++){fetch('http://127.0.0.1:'+apiPort+'/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:i})}).then(res=>res.text()).then(text=>console.log('[刷新窗口 '+i+']',text)).catch(err=>console.error('[刷新窗口 '+i+'失败]',err))}alert('已刷新所有窗口')}else{console.log('刷新窗口 '+num);fetch('http://127.0.0.1:'+apiPort+'/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:num})}).then(res=>res.text()).then(text=>{console.log('[刷新窗口 '+num+']',text);alert('已刷新窗口 '+num)}).catch(err=>{console.error('[刷新窗口 '+num+'失败]',err);alert('刷新窗口 '+num+' 失败: '+err.message)})}}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:140px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:40px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;white-space:nowrap}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#refreshAllBtn{background:#007bff;display:none}#refreshAllBtn:hover{background:#0069d9}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="refreshAllBtn" onclick="showRefreshSelector()">刷新全部</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');const r=document.getElementById('refreshAllBtn');if(c){b.textContent='关闭控制';b.classList.add('active');r.style.display='block'}else{b.textContent='控制';b.classList.remove('active');r.style.display='none'}ipcRenderer.send('toggle-control',c)}function showRefreshSelector(){ipcRenderer.send('show-refresh-selector',${currentGroupIndex},JSON.stringify(${JSON.stringify(windowTitles).replace(/"/g, '&quot;')}))}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -1290,6 +1290,128 @@ ipcMain.on('toggle-control', (event, enabled) => {
     // 关闭控制模式：恢复辅助窗口鼠标限制
     vncWindows.forEach(w => w.setIgnoreMouseEvents(true))
     console.log('控制模式关闭：辅助窗口鼠标限制已恢复')
+  }
+})
+
+// ★ 窗口刷新选择器
+let refreshSelectorWindow = null
+ipcMain.on('show-refresh-selector', (event, groupIndex, titlesStr) => {
+  const apiPort = 38980 + groupIndex
+  const windowTitles = JSON.parse(titlesStr)
+
+  // 如果已存在选择器窗口，关闭它
+  if (refreshSelectorWindow && !refreshSelectorWindow.isDestroyed()) {
+    refreshSelectorWindow.destroy()
+    refreshSelectorWindow = null
+  }
+
+  // 获取控制栏窗口位置（在左侧显示）
+  const controlBarPos = controlBarWindow ? controlBarWindow.getBounds() : { x: screen.getPrimaryDisplay().workAreaSize.width - 150, y: screen.getPrimaryDisplay().workAreaSize.height - 40 }
+
+  // 创建窗口选择器
+  refreshSelectorWindow = new BrowserWindow({
+    x: controlBarPos.x - 200,
+    y: controlBarPos.y,
+    width: 200,
+    height: Math.min(400, 60 + windowTitles.length * 50),
+    frame: true,
+    transparent: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    title: '选择刷新目标',
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  })
+
+  refreshSelectorWindow.setMenu(null)
+
+  // 生成窗口选项HTML
+  let optionsHtml = windowTitles.map((title, i) => 
+    `<option value="${i + 1}">${i + 1}. ${title || '窗口' + (i + 1)}</option>`
+  ).join('')
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:"Microsoft YaHei",sans-serif;margin:16px;padding:0;background:#1e1e1e;color:#f0f0f0}
+    h2{font-size:16px;margin:0 0 16px;color:#4caf50}
+    select{width:100%;padding:8px;margin-bottom:12px;font-size:14px;border:1px solid #444;background:#2d2d2d;color:#f0f0f0;border-radius:4px}
+    button{width:100%;padding:10px;margin:4px 0;font-size:14px;font-weight:bold;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}
+    #refreshOne{background:#007bff;margin-bottom:12px}#refreshOne:hover{background:#0069d9}
+    #refreshAll{background:#28a745}#refreshAll:hover{background:#218838}
+    #cancel{background:#6c757d;margin-top:12px}#cancel:hover{background:#5a6268}
+    #result{margin-top:12px;padding:8px;border-radius:4px;text-align:center;font-size:13px}
+    #result.success{background:#1e4620;color:#4caf50}
+    #result.error{background:#461a1a;color:#f44336}
+  </style></head><body>
+    <h2>选择刷新目标</h2>
+    <select id="windowSelect">${optionsHtml}</select>
+    <button id="refreshOne" onclick="refreshOne()">刷新选中窗口</button>
+    <button id="refreshAll" onclick="refreshAll()">刷新全部窗口</button>
+    <button id="cancel" onclick="closeWindow()">取消</button>
+    <div id="result"></div>
+    <script>
+      const{ipcRenderer}=require('electron');
+      const apiPort=${apiPort};
+      function refreshOne(){
+        const select=document.getElementById('windowSelect');
+        const windowIndex=parseInt(select.value);
+        showResult('刷新窗口 '+windowIndex+'...',false);
+        fetch('http://127.0.0.1:'+apiPort+'/refresh',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({windowIndex})
+        }).then(res=>res.text()).then(text=>{
+          showResult('已刷新窗口 '+windowIndex,true);
+          setTimeout(closeWindow,1500);
+        }).catch(err=>{
+          showResult('刷新窗口 '+windowIndex+' 失败: '+err.message,false,true);
+        });
+      }
+      function refreshAll(){
+        showResult('刷新所有窗口...',false);
+        const select=document.getElementById('windowSelect');
+        const promises=[];
+        for(let i=1;i<=select.options.length;i++){
+          promises.push(
+            fetch('http://127.0.0.1:'+apiPort+'/refresh',{
+              method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({windowIndex:i})
+            }).then(res=>res.text())
+          );
+        }
+        Promise.all(promises).then(results=>{
+          showResult('已刷新所有窗口',true);
+          setTimeout(closeWindow,1500);
+        }).catch(err=>{
+          showResult('刷新失败: '+err.message,false,true);
+        });
+      }
+      function showResult(msg,isSuccess,isError){
+        const result=document.getElementById('result');
+        result.textContent=msg;
+        result.className=isSuccess?'success':(isError?'error':'');
+      }
+      function closeWindow(){
+        ipcRenderer.send('close-refresh-selector');
+      }
+      window.addEventListener('keydown',e=>{
+        if(e.key==='Escape')closeWindow();
+      });
+    </script>
+  </body></html>`
+
+  refreshSelectorWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+
+  // 窗口关闭时清理
+  refreshSelectorWindow.on('closed', () => {
+    refreshSelectorWindow = null
+  })
+})
+
+ipcMain.on('close-refresh-selector', () => {
+  if (refreshSelectorWindow && !refreshSelectorWindow.isDestroyed()) {
+    refreshSelectorWindow.destroy()
+    refreshSelectorWindow = null
   }
 })
 
