@@ -393,50 +393,21 @@ function removeSyncCapture () {
   })
 }
 
-// ========== 控制按钮：在每个VNC窗口内注入（主控 + 刷新）==========
+// ========== 控制按钮：在每个VNC窗口内注入（刷新）==========
 function injectControlButtons () {
   osrWindows.forEach((win, i) => {
     if (!win || win.isDestroyed()) return
     win.webContents.executeJavaScript(`
       (function() {
-        // 避免重复注入：已有控制栏时显示并更新样式
+        // 避免重复注入：已有控制栏时显示
         var existingBar = document.getElementById('__novnc_control_bar');
         if (existingBar) {
           existingBar.style.display = 'flex';
-          var masterBtn = document.getElementById('__novnc_master_btn');
-          var isMaster = ${i} === ${masterWindowIndex};
-          if (masterBtn) {
-            masterBtn.style.background = isMaster ? '#28a745' : '#555';
-            masterBtn.textContent = isMaster ? '主控✓' : '主控';
-          }
           return;
         }
         var bar = document.createElement('div');
         bar.id = '__novnc_control_bar';
         bar.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;display:flex;gap:4px;';
-
-        // 主控按钮
-        var masterBtn = document.createElement('div');
-        masterBtn.id = '__novnc_master_btn';
-        var isMaster = ${i} === ${masterWindowIndex};
-        masterBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:' + (isMaster ? '#28a745' : '#555') + ';';
-        masterBtn.textContent = isMaster ? '主控✓' : '主控';
-        masterBtn.addEventListener('mouseenter', function(){ masterBtn.style.opacity = '1'; });
-        masterBtn.addEventListener('mouseleave', function(){ masterBtn.style.opacity = '0.85'; });
-        ['mousedown', 'mouseup', 'click'].forEach(function(et) {
-          masterBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-        });
-        masterBtn.addEventListener('click', function(e){
-          e.stopPropagation();
-          e.preventDefault();
-          try {
-            fetch('http://127.0.0.1:${38980 + currentGroupIndex}/set-master', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ windowIndex: ${i + 1} })  // 1-based
-            }).catch(function(){});
-          } catch(ex) {}
-        }, true);
 
         // 刷新按钮
         var refreshBtn = document.createElement('div');
@@ -460,7 +431,6 @@ function injectControlButtons () {
           } catch(ex) {}
         }, true);
 
-        bar.appendChild(masterBtn);
         bar.appendChild(refreshBtn);
         document.body.appendChild(bar);
       })()
@@ -478,19 +448,7 @@ function removeControlButtons () {
   })
 }
 
-function updateControlButtons () {
-  osrWindows.forEach((win, i) => {
-    if (!win || win.isDestroyed()) return
-    const isMaster = i === masterWindowIndex
-    win.webContents.executeJavaScript(`
-      var masterBtn = document.getElementById('__novnc_master_btn');
-      if (masterBtn) {
-        masterBtn.style.background = ${isMaster} ? '#28a745' : '#555';
-        masterBtn.textContent = ${isMaster} ? '主控✓' : '主控';
-      }
-    `).catch(() => {})
-  })
-}
+
 
 // ========== 刷新 canvas 信息缓存 ==========
 function refreshCanvasInfo (win, idx, retryCount = 0) {
@@ -1345,21 +1303,17 @@ ipcMain.on('select-group', (event, groupIndex) => {
 ipcMain.on('toggle-control', (event, enabled) => {
   controlMode = enabled
   if (enabled) {
-    // 开启控制模式：重置主控，注入同步捕获和控制按钮
-    masterWindowIndex = -1  // 无主控，需手动选择
-    osrWindows.forEach((w, i) => refreshCanvasInfo(w, i))
-    injectSyncCapture()
+    // 开启控制模式：显示刷新按钮，解除辅助窗口鼠标限制
+    vncWindows.forEach(w => w.setIgnoreMouseEvents(false))
     setTimeout(() => {
       injectControlButtons()
-      updateControlButtons()
     }, 300)
-    console.log('控制模式 ON（需选择主控窗口后同步才会启动）')
+    console.log('刷新按钮显示')
   } else {
-    // 关闭控制模式：移除所有控制UI，停止同步
-    masterWindowIndex = -1
-    removeSyncCapture()
+    // 关闭控制模式：隐藏刷新按钮，恢复辅助窗口鼠标限制
+    vncWindows.forEach(w => w.setIgnoreMouseEvents(true))
     removeControlButtons()
-    console.log('控制模式 OFF，同步已停止')
+    console.log('刷新按钮隐藏')
   }
 })
 
