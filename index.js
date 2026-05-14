@@ -410,28 +410,21 @@ function injectControlButtons () {
             var apiUrl = 'http://127.0.0.1:${apiPort}/refresh';
             var requestData = { windowIndex: ${windowIndex} };
             console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
-            
-            // 添加 alert 提示
-            alert('刷新窗口 ${windowIndex}: 正在发送请求到 ' + apiUrl);
-            
+
             fetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(requestData)
             }).then(function(res){
               console.log('[刷新按钮] 响应状态:', res.status);
-              alert('刷新窗口 ${windowIndex}: 响应状态 ' + res.status);
               return res.text();
             }).then(function(text){
               console.log('[刷新按钮] 响应内容:', text);
-              alert('刷新窗口 ${windowIndex}: 响应内容 ' + text);
             }).catch(function(err){
               console.error('[刷新按钮] 请求失败:', err);
-              alert('刷新窗口 ${windowIndex}: 请求失败 - ' + err.message);
             });
           } catch(ex) {
             console.error('[刷新按钮] 异常:', ex);
-            alert('刷新窗口 ${windowIndex}: 异常 - ' + ex.message);
           }
         }, true);
 
@@ -489,28 +482,21 @@ function injectControlButtons () {
             var apiUrl = 'http://127.0.0.1:${apiPort}/refresh';
             var requestData = { windowIndex: ${windowIndex} };
             console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
-            
-            // 添加 alert 提示
-            alert('刷新窗口 ${windowIndex}: 正在发送请求到 ' + apiUrl);
-            
+
             fetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(requestData)
             }).then(function(res){
               console.log('[刷新按钮] 响应状态:', res.status);
-              alert('刷新窗口 ${windowIndex}: 响应状态 ' + res.status);
               return res.text();
             }).then(function(text){
               console.log('[刷新按钮] 响应内容:', text);
-              alert('刷新窗口 ${windowIndex}: 响应内容 ' + text);
             }).catch(function(err){
               console.error('[刷新按钮] 请求失败:', err);
-              alert('刷新窗口 ${windowIndex}: 请求失败 - ' + err.message);
             });
           } catch(ex) {
             console.error('[刷新按钮] 异常:', ex);
-            alert('刷新窗口 ${windowIndex}: 异常 - ' + ex.message);
           }
         }, true);
 
@@ -1040,10 +1026,15 @@ function createVNCWindows (config, groupIndex) {
     win.setMenu(null)
     win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
 
-    // 禁用 noVNC 的 setCapture 机制
+    // 禁用 noVNC 的 setCapture 机制 + 去掉窗口焦点灰色过渡
     win.webContents.on('did-finish-load', () => {
       win.webContents.executeJavaScript(`
         (function() {
+          // 去掉焦点outline，避免窗口灰色过渡边框
+          var style = document.createElement('style');
+          style.textContent = '* { outline: none !important; } :focus { outline: none !important; } ::-webkit-focus-ring { display: none !important; }';
+          document.head.appendChild(style);
+
           var screen = document.getElementById('screen');
           if (!screen) return;
           screen.addEventListener('contextmenu', function(e) {
