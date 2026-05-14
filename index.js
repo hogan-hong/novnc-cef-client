@@ -418,7 +418,7 @@ function injectControlButtons () {
         refreshBtn.textContent = '刷新';
         refreshBtn.addEventListener('mouseenter', function(){ refreshBtn.style.opacity = '1'; });
         refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
-        ['mousedown', 'mouseup', 'click'].forEach(function(et) {
+        ['mousedown', 'mouseup'].forEach(function(et) {
           refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
         });
         refreshBtn.addEventListener('click', function(e){
