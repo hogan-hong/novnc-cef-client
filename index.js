@@ -1313,23 +1313,25 @@ function showRefreshButtons () {
       const windowIndex = i + 1
       console.log(`创建窗口 ${windowIndex} 的刷新按钮，位置：${bounds.x + bounds.width - 60}, ${bounds.y + bounds.height - 40}`)
       
-      // 创建刷新按钮窗口（浮动，置顶）
-      const refreshBtn = new BrowserWindow({
-        x: bounds.x + bounds.width - 60,
-        y: bounds.y + bounds.height - 40,
-        width: 56,
-        height: 32,
-        frame: false,
-        transparent: true,
-        alwaysOnTop: true,
-        skipTaskbar: true,
-        resizable: false,
-        webPreferences: { nodeIntegration: true, contextIsolation: false }
-      })
-      
-      refreshBtn.setMenu(null)
-      
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:rgba(0,0,0,0.3);width:56px;height:32px;display:flex;justify-content:center;align-items:center}button{width:50px;height:28px;padding:0;background:#007bff;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}button:hover{background:#0069d9}button:active{background:#0056b3}</style></head><body><button onclick="refreshWindow()">刷新</button><script>const{ipcRenderer}=require('electron');function refreshWindow(){const btn=document.querySelector('button');btn.textContent='...';fetch('http://127.0.0.1:${apiPort}/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:${windowIndex}})}).then(res=>res.text()).then(text=>{btn.textContent='√';setTimeout(()=>btn.textContent='刷新',1000)}).catch(err=>{console.error('刷新失败:',err);btn.textContent='×';setTimeout(()=>btn.textContent='刷新',1000)})}</script></body></html>`
+    // 创建刷新按钮窗口（浮动，置顶，作为辅助窗口的子窗口）
+    const refreshBtn = new BrowserWindow({
+      x: bounds.x + bounds.width - 60,
+      y: bounds.y + bounds.height - 40,
+      width: 56,
+      height: 32,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      hasShadow: false,  // 禁用窗口阴影，去除灰色边框
+      parent: auxWin,   // 设置为辅助窗口的子窗口，跟随辅助窗口
+      webPreferences: { nodeIntegration: true, contextIsolation: false }
+    })
+    
+    refreshBtn.setMenu(null)
+    
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}html,body{width:56px;height:32px;background:transparent;overflow:hidden;display:flex;justify-content:center;align-items:center}button{width:50px;height:28px;padding:0;background:#007bff;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;box-shadow:0 2px 4px rgba(0,0,0,0.3);outline:none}button:hover{background:#0069d9;box-shadow:0 3px 6px rgba(0,0,0,0.4)}button:active{background:#0056b3;box-shadow:0 1px 2px rgba(0,0,0,0.3)}button:focus{outline:none}</style></head><body><button onclick="refreshWindow()">刷新</button><script>const{ipcRenderer}=require('electron');function refreshWindow(){const btn=document.querySelector('button');btn.textContent='...';fetch('http://127.0.0.1:${apiPort}/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:${windowIndex}})}).then(res=>res.text()).then(text=>{btn.textContent='√';setTimeout(()=>btn.textContent='刷新',1000)}).catch(err=>{console.error('刷新失败:',err);btn.textContent='×';setTimeout(()=>btn.textContent='刷新',1000)})}</script></body></html>`
       
       refreshBtn.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
       
