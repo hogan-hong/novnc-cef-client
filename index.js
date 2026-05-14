@@ -299,7 +299,8 @@ function createControlButtons (parentWin, windowCount = 5, windowTitles = []) {
     x: workArea.width - 110, y: workArea.height - 40,
     width: 100, height: 30,
     frame: false, transparent: true,
-    alwaysOnTop: true, skipTaskbar: true, resizable: false,
+    alwaysOnTop: true, resizable: false,
+    parent: parentWin,  // 设置父窗口，跟随辅助窗口
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
