@@ -1351,11 +1351,25 @@ function showRefreshButtons () {
 }
 
 function hideRefreshButtons () {
-  refreshBtnWindows.forEach(btn => {
-    if (btn && !btn.isDestroyed()) {
-      btn.destroy()
+  console.log(`开始隐藏刷新按钮，当前有 ${refreshBtnWindows.length} 个按钮`)
+  
+  // 使用 while 循环避免 forEach 中修改数组的问题
+  while (refreshBtnWindows.length > 0) {
+    const btn = refreshBtnWindows.shift()  // 取出第一个
+    if (!btn) continue
+    
+    try {
+      if (!btn.isDestroyed()) {
+        btn.destroy()
+        console.log('已销毁一个刷新按钮')
+      } else {
+        console.log('按钮已销毁，跳过')
+      }
+    } catch (err) {
+      console.error('销毁刷新按钮失败:', err && (err.message || err))
     }
-  })
+  }
+  
   refreshBtnWindows = []
   console.log('所有刷新按钮已隐藏')
 }
