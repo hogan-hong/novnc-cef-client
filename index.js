@@ -102,8 +102,13 @@ let selectWindow = null
 let startupErrorWindow = null
 
 // OSR配置：固定帧率，降低CPU/GPU负载
-const OSR_FRAME_RATE = 15
+const OSR_FRAME_RATE = 5  // 默认5fps，降低日志量和性能开销
 const OSR_FRAME_INTERVAL = 1000 / OSR_FRAME_RATE
+
+// OSR日志开关 (默认关闭，避免生产环境日志爆炸)
+// 启用方式1: 命令行参数 --osr-logs
+// 启用方式2: 配置文件 [System] OSR_LOG=1
+let enableOsrLogging = process.argv.includes('--osr-logs')
 
 // ★ 主控窗口索引，-1=无主控，≥0=主控窗口索引
 // 只有主控窗口的输入会同步到其他窗口
@@ -159,6 +164,11 @@ function readConfig () {
     if (config.groups.length === 0) {
       require('electron').dialog.showErrorBox('配置异常', `未找到分组信息！\n请检查 配置文件.int 中的 组1名称 等字段`)
       return null
+    }
+    // 读取 OSR 日志开关
+    const osrLogMatch = content.match(/OSR_LOG\s*=\s*([01])/i)
+    if (osrLogMatch) {
+      config.osrLogEnabled = osrLogMatch[1] === '1'
     }
     return config
   } catch (e) {
@@ -1175,11 +1185,11 @@ function createVNCWindows (config, groupIndex) {
       // 调用 capturePage 截取 OSR 窗口内容
       osrWin.webContents.capturePage().then(nativeImage => {
         if (!nativeImage) {
-          console.log(`[OSR] 窗口 ${i + 1}] capturePage 返回空图像`)
+          if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] capturePage 返回空图像`)
           return
         }
         
-        console.log(`[OSR] 窗口 ${i + 1}] capturePage 成功，尺寸: ${nativeImage.getSize().width}x${nativeImage.getSize().height}`)
+        if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] capturePage 成功，尺寸: ${nativeImage.getSize().width}x${nativeImage.getSize().height}`)
         
         try {
           // 尝试加载native模块（仅在Windows平台有效）
@@ -1200,18 +1210,18 @@ function createVNCWindows (config, groupIndex) {
                   const osrHelper = require(osrHelperPath)
                   drawBitmapToWindow = osr_helper.drawBitmapToWindow
                 } catch (e2) {
-                  console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e1.message})`)
+                  if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e1.message})`)
                   return
                 }
               }
-              console.log(`[OSR] 窗口 ${i + 1}] native模块加载成功 (${osrHelperPath})`)
+              if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] native模块加载成功 (${osrHelperPath})`)
             } catch (e) {
-              console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e.message})`)
+              if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e.message})`)
               return
             }
           } else {
             // 非Windows平台不支持native模块
-            if (i === 0) {  // 只输出一次警告
+            if (i === 0 && enableOsrLogging) {  // 只输出一次警告
               console.log('[OSR] 非Windows平台，native模块不可用，跳过OSR绘制功能')
             }
             return
@@ -1222,7 +1232,7 @@ function createVNCWindows (config, groupIndex) {
           // 转换NativeImage为Buffer
           const bitmapBuffer = nativeImage.toBitmap()
           if (!bitmapBuffer || bitmapBuffer.length === 0) {
-            console.log(`[OSR] 窗口 ${i + 1}] bitmapBuffer 为空，跳过绘制`)
+            if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] bitmapBuffer 为空，跳过绘制`)
             return
           }
 
@@ -1236,16 +1246,16 @@ function createVNCWindows (config, groupIndex) {
             hwnd = hwndBuf.readUInt32LE(0)
           }
 
-          console.log(`[OSR] 窗口 ${i + 1}] 开始绘制到辅助窗口 HWND=${hwnd}, bitmapBuffer.size=${bitmapBuffer.length}`)
+          if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] 开始绘制到辅助窗口 HWND=${hwnd}, bitmapBuffer.size=${bitmapBuffer.length}`)
           
           // 通过GDI绘制到辅助窗口
           drawBitmapToWindow(hwnd, winW, winH, bitmapBuffer)
-          console.log(`[OSR] 窗口 ${i + 1}] 绘制完成`)
+          if (enableOsrLogging) console.log(`[OSR] 窗口 ${i + 1}] 绘制完成`)
         } catch (e) {
-          console.error(`[OSR] 窗口 ${i + 1} 绘制失败:`, e.message)
+          if (enableOsrLogging) console.error(`[OSR] 窗口 ${i + 1} 绘制失败:`, e.message)
         }
       }).catch(err => {
-        console.error(`[OSR] 窗口 ${i + 1}] capturePage 失败:`, err.message)
+        if (enableOsrLogging) console.error(`[OSR] 窗口 ${i + 1}] capturePage 失败:`, err.message)
       })
     }, OSR_FRAME_INTERVAL)
     
@@ -1306,12 +1316,19 @@ function createVNCWindows (config, groupIndex) {
 app.whenReady().then(() => {
   const config = readConfig()
   if (!config) {
-    showStartupError('配置文件加载失败', `程序没有退出，但未能读取配置。\n\n请确认 配置文件.int 位于 exe 同目录，或使用 --config=完整路径 指定。\n\n日志位置优先为 exe 同目录 Log.txt，无法写入时在 ${app.getPath('userData')}\\Log.txt`)
+    showStartupError('配置文件加载失败', `程序没有退出，但未能读取配置。\n\n请确认 配置文件.int 位于 exe 同目录，或使用 --config=完整路径 指定。\n\n日志位置优先为 exe 同目录 Log.txt，无法写入时在 ${app.getPath('userData')}\Log.txt`)
     return
   }
   if (config.groups.length === 0) {
     showStartupError('配置异常', '未找到分组信息。请检查 配置文件.int 中是否存在 组1名称、组2名称 等字段。')
     return
+  }
+  // 从配置文件读取 OSR 日志开关（优先级高于命令行参数）
+  if (config.osrLogEnabled !== undefined) {
+    enableOsrLogging = config.osrLogEnabled
+    console.log(`[配置] OSR日志: ${enableOsrLogging ? '开启' : '关闭'} (来源: 配置文件)`)
+  } else {
+    console.log(`[配置] OSR日志: ${enableOsrLogging ? '开启' : '关闭'} (来源: 命令行参数 ${enableOsrLogging ? '--osr-logs' : '默认'})`)
   }
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
