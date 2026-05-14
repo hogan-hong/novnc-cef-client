@@ -102,7 +102,7 @@ let selectWindow = null
 let startupErrorWindow = null
 
 // OSR配置：固定帧率，降低CPU/GPU负载
-const OSR_FRAME_RATE = 5  // 默认5fps，降低日志量和性能开销
+const OSR_FRAME_RATE = 10  // 每个窗口10fps
 const OSR_FRAME_INTERVAL = 1000 / OSR_FRAME_RATE
 
 // OSR日志开关 (默认关闭，避免生产环境日志爆炸)
