@@ -1301,45 +1301,53 @@ ipcMain.on('toggle-control', (event, enabled) => {
 // ========== 显示/隐藏辅助窗口刷新按钮 ==========
 function showRefreshButtons () {
   const apiPort = 38980 + currentGroupIndex
+  console.log(`开始显示刷新按钮，共 ${vncWindows.length} 个辅助窗口`)
   
   vncWindows.forEach((auxWin, i) => {
-    if (!auxWin || auxWin.isDestroyed()) return
-    
-    const bounds = auxWin.getBounds()
-    const windowIndex = i + 1
-    
-    // 创建刷新按钮窗口（浮动，置顶）
-    const refreshBtn = new BrowserWindow({
-      x: bounds.x + bounds.width - 60,
-      y: bounds.y + bounds.height - 40,
-      width: 56,
-      height: 32,
-      frame: false,
-      transparent: true,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      resizable: false,
-      webPreferences: { nodeIntegration: true, contextIsolation: false }
-    })
-    
-    refreshBtn.setMenu(null)
-    
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:rgba(0,0,0,0.3);width:56px;height:32px;display:flex;justify-content:center;align-items:center}button{width:50px;height:28px;padding:0;background:#007bff;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}button:hover{background:#0069d9}button:active{background:#0056b3}</style></head><body><button onclick="refreshWindow()">刷新</button><script>const{ipcRenderer}=require('electron');function refreshWindow(){const btn=document.querySelector('button');btn.textContent='...';fetch('http://127.0.0.1:${apiPort}/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:${windowIndex}})}).then(res=>res.text()).then(text=>{btn.textContent='√';setTimeout(()=>btn.textContent='刷新',1000)}).catch(err=>{btn.textContent='×';setTimeout(()=>btn.textContent='刷新',1000)})}</script></body></html>`
-    
-    refreshBtn.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-    
-    // 窗口关闭时清理
-    refreshBtn.on('closed', () => {
-      const idx = refreshBtnWindows.indexOf(refreshBtn)
-      if (idx !== -1) refreshBtnWindows.splice(idx, 1)
-    })
-    
-    // 确保按钮窗口在辅助窗口之上
-    refreshBtn.moveAbove(auxWin)
-    
-    refreshBtnWindows.push(refreshBtn)
-    console.log(`窗口 ${windowIndex} 刷新按钮已显示`)
+    try {
+      if (!auxWin || auxWin.isDestroyed()) {
+        console.log(`跳过窗口 ${i + 1}：窗口不存在或已销毁`)
+        return
+      }
+      
+      const bounds = auxWin.getBounds()
+      const windowIndex = i + 1
+      console.log(`创建窗口 ${windowIndex} 的刷新按钮，位置：${bounds.x + bounds.width - 60}, ${bounds.y + bounds.height - 40}`)
+      
+      // 创建刷新按钮窗口（浮动，置顶）
+      const refreshBtn = new BrowserWindow({
+        x: bounds.x + bounds.width - 60,
+        y: bounds.y + bounds.height - 40,
+        width: 56,
+        height: 32,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        webPreferences: { nodeIntegration: true, contextIsolation: false }
+      })
+      
+      refreshBtn.setMenu(null)
+      
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:rgba(0,0,0,0.3);width:56px;height:32px;display:flex;justify-content:center;align-items:center}button{width:50px;height:28px;padding:0;background:#007bff;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif}button:hover{background:#0069d9}button:active{background:#0056b3}</style></head><body><button onclick="refreshWindow()">刷新</button><script>const{ipcRenderer}=require('electron');function refreshWindow(){const btn=document.querySelector('button');btn.textContent='...';fetch('http://127.0.0.1:${apiPort}/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:${windowIndex}})}).then(res=>res.text()).then(text=>{btn.textContent='√';setTimeout(()=>btn.textContent='刷新',1000)}).catch(err=>{console.error('刷新失败:',err);btn.textContent='×';setTimeout(()=>btn.textContent='刷新',1000)})}</script></body></html>`
+      
+      refreshBtn.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      
+      // 窗口关闭时清理
+      refreshBtn.on('closed', () => {
+        const idx = refreshBtnWindows.indexOf(refreshBtn)
+        if (idx !== -1) refreshBtnWindows.splice(idx, 1)
+      })
+      
+      refreshBtnWindows.push(refreshBtn)
+      console.log(`窗口 ${windowIndex} 刷新按钮已显示`)
+    } catch (err) {
+      console.error(`创建窗口 ${i + 1} 刷新按钮失败:`, err && (err.message || err))
+    }
   })
+  
+  console.log(`刷新按钮显示完成，共创建 ${refreshBtnWindows.length} 个按钮`)
 }
 
 function hideRefreshButtons () {
