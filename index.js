@@ -1159,83 +1159,98 @@ function createVNCWindows (config, groupIndex) {
     auxWin.setMenu(null)
     auxWin.on('page-title-updated', (event) => { event.preventDefault(); auxWin.setTitle(item.title) })
 
-    // ====== 第3步：监听OSR paint事件，绘制到辅助窗口 ======
-    osrWin.webContents.on('paint', (event, dirtyRect, nativeImage) => {
-      console.log(`[OSR] 窗口 ${i + 1} paint 事件触发`)
-      console.log(`[OSR] 窗口 ${i + 1}] nativeImage=${nativeImage ? '有' : '无/null'}，dirtyRect=${JSON.stringify(dirtyRect)}，期望尺寸: ${winW}x${winH}`)
-      if (!nativeImage) {
-        console.log(`[OSR] 窗口 ${i + 1}] nativeImage为空，跳过绘制`)
-        return
-      }
-
+    // ====== 第3步：使用定期截图绘制到辅助窗口 ======
+    // ★ 关键：OSR 模式下 paint 事件不触发 canvas 内容，必须使用 capturePage
+    // 每隔 OSR_FRAME_INTERVAL (67ms) 截图一次，即 15fps
+    console.log(`[窗口 ${i + 1}] 启动定期截图任务 (${1000/OSR_FRAME_INTERVAL}fps)`)
+    
+    const captureInterval = setInterval(() => {
       // 限帧：检查距离上次绘制是否超过间隔时间
       const now = Date.now()
       const lastDrawTime = windowDrawTimes[i] || 0
-      if (now - lastDrawTime < OSR_FRAME_INTERVAL) {
-        console.log(`[OSR] 窗口 ${i + 1}] 限帧跳过（距离上次: ${now - lastDrawTime}ms < ${OSR_FRAME_INTERVAL}ms）`)
-        return
-      }
-
+      if (now - lastDrawTime < OSR_FRAME_INTERVAL) return
+      
       windowDrawTimes[i] = now
-
-      try {
-        // 尝试加载native模块（仅在Windows平台有效）
-        let drawBitmapToWindow = null
-
-        // 只在Windows平台尝试加载native模块
-        if (process.platform === 'win32') {
-          try {
-            let osrHelperPath
-            // 尝试多个可能的路径
-            try {
-              osrHelperPath = path.join(__dirname, 'build', 'Release', 'osr_helper.node')
-              const osrHelper = require(osrHelperPath)
-              drawBitmapToWindow = osrHelper.drawBitmapToWindow
-            } catch (e1) {
-              try {
-                osrHelperPath = path.join(app.getAppPath(), 'build', 'Release', 'osr_helper.node')
-                const osrHelper = require(osrHelperPath)
-                drawBitmapToWindow = osr_helper.drawBitmapToWindow
-              console.log(`[OSR] 窗口 ${i + 1}: native模块加载成功 (${osrHelperPath})`)
-              } catch (e2) {
-                console.log(`[OSR] 窗口 ${i + 1}: native模块加载失败，跳过绘制 (${e1.message})`)
-                return
-              }
-            }
-          } catch (e) {
-            console.log(`[OSR] 窗口 ${i + 1}: native模块加载失败，跳过绘制 (${e.message})`)
-            return
-          }
-        } else {
-          // 非Windows平台不支持native模块
-          if (i === 0) {  // 只输出一次警告
-            console.log('[OSR] 非Windows平台，native模块不可用，跳过OSR绘制功能')
-          }
+      
+      // 调用 capturePage 截取 OSR 窗口内容
+      osrWin.webContents.capturePage().then(nativeImage => {
+        if (!nativeImage) {
+          console.log(`[OSR] 窗口 ${i + 1}] capturePage 返回空图像`)
           return
         }
+        
+        console.log(`[OSR] 窗口 ${i + 1}] capturePage 成功，尺寸: ${nativeImage.getSize().width}x${nativeImage.getSize().height}`)
+        
+        try {
+          // 尝试加载native模块（仅在Windows平台有效）
+          let drawBitmapToWindow = null
 
-        if (!drawBitmapToWindow) return
+          // 只在Windows平台尝试加载native模块
+          if (process.platform === 'win32') {
+            try {
+              let osrHelperPath
+              // 尝试多个可能的路径
+              try {
+                osrHelperPath = path.join(__dirname, 'build', 'Release', 'osr_helper.node')
+                const osrHelper = require(osrHelperPath)
+                drawBitmapToWindow = osrHelper.drawBitmapToWindow
+              } catch (e1) {
+                try {
+                  osrHelperPath = path.join(app.getAppPath(), 'build', 'Release', 'osr_helper.node')
+                  const osrHelper = require(osrHelperPath)
+                  drawBitmapToWindow = osr_helper.drawBitmapToWindow
+                } catch (e2) {
+                  console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e1.message})`)
+                  return
+                }
+              }
+              console.log(`[OSR] 窗口 ${i + 1}] native模块加载成功 (${osrHelperPath})`)
+            } catch (e) {
+              console.log(`[OSR] 窗口 ${i + 1}] native模块加载失败，跳过绘制 (${e.message})`)
+              return
+            }
+          } else {
+            // 非Windows平台不支持native模块
+            if (i === 0) {  // 只输出一次警告
+              console.log('[OSR] 非Windows平台，native模块不可用，跳过OSR绘制功能')
+            }
+            return
+          }
 
-        // 转换NativeImage为Buffer
-        const bitmapBuffer = nativeImage.toBitmap()
-        if (!bitmapBuffer || bitmapBuffer.length === 0) return
+          if (!drawBitmapToWindow) return
 
-        // 获取辅助窗口句柄
-        const hwndBuf = auxWin.getNativeWindowHandle()
-        let hwnd
-        if (hwndBuf.length === 8) {
-          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
-          hwnd = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
-        } else {
-          hwnd = hwndBuf.readUInt32LE(0)
+          // 转换NativeImage为Buffer
+          const bitmapBuffer = nativeImage.toBitmap()
+          if (!bitmapBuffer || bitmapBuffer.length === 0) {
+            console.log(`[OSR] 窗口 ${i + 1}] bitmapBuffer 为空，跳过绘制`)
+            return
+          }
+
+          // 获取辅助窗口句柄
+          const hwndBuf = auxWin.getNativeWindowHandle()
+          let hwnd
+          if (hwndBuf.length === 8) {
+            const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+            hwnd = hi === 0 ? lo : Number(hwndBuf.readBigUInt64LE())
+          } else {
+            hwnd = hwndBuf.readUInt32LE(0)
+          }
+
+          console.log(`[OSR] 窗口 ${i + 1}] 开始绘制到辅助窗口 HWND=${hwnd}, bitmapBuffer.size=${bitmapBuffer.length}`)
+          
+          // 通过GDI绘制到辅助窗口
+          drawBitmapToWindow(hwnd, winW, winH, bitmapBuffer)
+          console.log(`[OSR] 窗口 ${i + 1}] 绘制完成`)
+        } catch (e) {
+          console.error(`[OSR] 窗口 ${i + 1} 绘制失败:`, e.message)
         }
-
-        // 通过GDI绘制到辅助窗口
-        drawBitmapToWindow(hwnd, winW, winH, bitmapBuffer)
-      } catch (e) {
-        console.error(`[OSR] 窗口 ${i + 1} 绘制失败:`, e.message)
-      }
-    })
+      }).catch(err => {
+        console.error(`[OSR] 窗口 ${i + 1}] capturePage 失败:`, err.message)
+      })
+    }, OSR_FRAME_INTERVAL)
+    
+    // 保存定时器引用，方便后续清理
+    osrWin.captureInterval = captureInterval
 
     vncWindows.push(auxWin)
 
