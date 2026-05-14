@@ -1164,7 +1164,7 @@ function createVNCWindows (config, groupIndex) {
     })
 
     // ★ 禁止鼠标穿透，维持标准窗口属性
-    auxWin.setIgnoreMouseEvents(false)
+    auxWin.setIgnoreMouseEvents(true)  // 辅助窗口仅供大漠抓图，禁止鼠标交互
 
     auxWin.setMenu(null)
     auxWin.on('page-title-updated', (event) => { event.preventDefault(); auxWin.setTitle(item.title) })
