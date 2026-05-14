@@ -1377,11 +1377,7 @@ ipcMain.on('exit-app', () => {
   osrWindows.forEach(w => { try { w.destroy() } catch (e) {} })
   osrWindows.length = 0
   
-  // 关闭所有辅助窗口
-  auxWindows.forEach(w => { try { w.destroy() } catch (e) {} })
-  auxWindows.length = 0
-  
-  // 关闭 VNC 窗口
+  // 关闭所有辅助窗口（vncWindows 就是辅助窗口数组）
   vncWindows.forEach(w => { try { w.destroy() } catch (e) {} })
   vncWindows.length = 0
   
