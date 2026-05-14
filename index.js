@@ -422,13 +422,25 @@ function injectControlButtons () {
         refreshBtn.addEventListener('click', function(e){
           e.stopPropagation();
           e.preventDefault();
+          const apiUrl = 'http://127.0.0.1:${38980 + currentGroupIndex}/refresh';
+          const requestData = { windowIndex: ${i + 1} };
+          console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
           try {
-            fetch('http://127.0.0.1:${38980 + currentGroupIndex}/refresh', {
+            fetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ windowIndex: ${i + 1} })  // 1-based
-            }).catch(function(){});
-          } catch(ex) {}
+              body: JSON.stringify(requestData)
+            }).then(function(res){
+              console.log('[刷新按钮] 响应状态:', res.status);
+              return res.text();
+            }).then(function(text){
+              console.log('[刷新按钮] 响应内容:', text);
+            }).catch(function(err){
+              console.error('[刷新按钮] 请求失败:', err);
+            });
+          } catch(ex) {
+            console.error('[刷新按钮] 异常:', ex);
+          }
         }, true);
 
         bar.appendChild(refreshBtn);
@@ -592,34 +604,6 @@ function startAPIServer (groupIndex, config) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
 
-    // ★ 设置主控窗口（点击当前主控 → 取消主控，点击其他窗口 → 切换主控）
-    if (req.method === 'POST' && req.url === '/set-master') {
-      let body = ''
-      req.on('data', chunk => { body += chunk.toString() })
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body)
-          const newMaster = data.windowIndex
-          // 1-based → 0-based
-          const masterIdx = typeof newMaster === 'number' && newMaster >= 1 ? newMaster - 1 : -1
-          // Toggle逻辑：点击当前主控 → 取消主控；点击其他窗口 → 设为新主控
-          if (masterIdx === masterWindowIndex) {
-            masterWindowIndex = -1  // 取消主控
-          } else if (masterIdx >= 0 && masterIdx < vncWindows.length) {
-            masterWindowIndex = masterIdx
-          }
-          updateControlButtons()
-          const syncActive = controlMode && masterWindowIndex >= 0
-          console.log(`主控窗口: ${masterWindowIndex >= 0 ? masterWindowIndex + 1 : '无'}, 同步: ${syncActive ? 'ON' : 'OFF'}`)
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: true, master: masterWindowIndex, sync: syncActive }))
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end('{"ok":false}')
-        }
-      })
-      return
-    }
 
     // ★ 刷新窗口画面
     if (req.method === 'POST' && req.url === '/refresh') {
@@ -628,17 +612,25 @@ function startAPIServer (groupIndex, config) {
       req.on('end', () => {
         try {
           const data = JSON.parse(body)
+          console.log(`[API /refresh] 收到请求:`, data)
           const refreshIdx = (data.windowIndex || 1) - 1  // 1-based → 0-based
+          console.log(`[API /refresh] 转换后的索引: ${refreshIdx} (0-based), osrWindows.length=${osrWindows.length}`)
           if (refreshIdx >= 0 && refreshIdx < osrWindows.length) {
             const refreshWin = osrWindows[refreshIdx]
             if (refreshWin && !refreshWin.isDestroyed()) {
               console.log(`刷新窗口 ${refreshIdx + 1} 画面`)
               refreshWin.webContents.reload()
+              console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 重新加载已发送`)
+            } else {
+              console.error(`[API /refresh] 窗口 ${refreshIdx + 1} 已销毁或不存在`)
             }
+          } else {
+            console.error(`[API /refresh] 窗口索引越界: ${refreshIdx}`)
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end('{"ok":true}')
         } catch (e) {
+          console.error(`[API /refresh] 处理失败:`, e)
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end('{"ok":false}')
         }
@@ -646,28 +638,6 @@ function startAPIServer (groupIndex, config) {
       return
     }
 
-    // ★ 同步事件接收
-    if (req.method === 'POST' && req.url === '/sync') {
-      let body = ''
-      req.on('data', chunk => { body += chunk.toString() })
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body)
-          const si = data.sourceIndex !== undefined ? data.sourceIndex : -1
-          if (si >= 0) {
-            if (data.type === 'sync-mouse') forwardMouseEvent(si, data)
-            else if (data.type === 'sync-key') forwardKeyEvent(si, data)
-            else if (data.type === 'sync-wheel') forwardWheelEvent(si, data)
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end('{"ok":true}')
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end('{"ok":false}')
-        }
-      })
-      return
-    }
 
     // ★ 外部控制命令
     if (req.method === 'POST') {
