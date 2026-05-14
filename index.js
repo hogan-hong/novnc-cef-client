@@ -292,7 +292,7 @@ function showGroupSelector (config) {
 }
 
 // ========== 右下角控制栏（控制 + 刷新 + 退出）==========
-function createControlButtons (parentWin) {
+function createControlButtons (parentWin, windowCount = 5) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
     x: workArea.width - 150, y: workArea.height - 40,
@@ -302,7 +302,7 @@ function createControlButtons (parentWin) {
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:140px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:40px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;white-space:nowrap}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#refreshAllBtn{background:#007bff;display:none}#refreshAllBtn:hover{background:#0069d9}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="refreshAllBtn" onclick="refreshAll()">刷新全部</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');const r=document.getElementById('refreshAllBtn');if(c){b.textContent='关闭控制';b.classList.add('active');r.style.display='block'}else{b.textContent='控制';b.classList.remove('active');r.style.display='none'}ipcRenderer.send('toggle-control',c)}function refreshAll(){const apiPort=38980+${currentGroupIndex};for(let i=1;i<=${groupWindowCount};i++){fetch('http://127.0.0.1:'+apiPort+'/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:i})}).then(res=>res.text()).then(text=>console.log('[刷新窗口 '+i+']',text)).catch(err=>console.error('[刷新窗口 '+i+'失败]',err))}alert('已刷新所有窗口')}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:140px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:40px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;white-space:nowrap}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#refreshAllBtn{background:#007bff;display:none}#refreshAllBtn:hover{background:#0069d9}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="refreshAllBtn" onclick="refreshAll()">刷新全部</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');const r=document.getElementById('refreshAllBtn');if(c){b.textContent='关闭控制';b.classList.add('active');r.style.display='block'}else{b.textContent='控制';b.classList.remove('active');r.style.display='none'}ipcRenderer.send('toggle-control',c)}function refreshAll(){const apiPort=38980+${currentGroupIndex};for(let i=1;i<=${windowCount};i++){fetch('http://127.0.0.1:'+apiPort+'/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({windowIndex:i})}).then(res=>res.text()).then(text=>console.log('[刷新窗口 '+i+']',text)).catch(err=>console.error('[刷新窗口 '+i+'失败]',err))}alert('已刷新所有窗口')}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -1224,7 +1224,7 @@ function createVNCWindows (config, groupIndex) {
     // ★ 有间隔：逐个创建，每个间隔 windowDelay 毫秒
     function createNextWindow(i) {
       if (i >= groupItems.length) {
-        createControlButtons(vncWindows[0] || null)
+        createControlButtons(vncWindows[0] || null, groupItems.length)
         if (!apiServer) startAPIServer(groupIndex, config)
         return
       }
@@ -1232,7 +1232,7 @@ function createVNCWindows (config, groupIndex) {
       if (i === groupItems.length - 1) {
         // 最后一个窗口创建完后，等间隔再初始化控制栏
         setTimeout(() => {
-          createControlButtons(vncWindows[0] || null)
+          createControlButtons(vncWindows[0] || null, groupItems.length)
           if (!apiServer) startAPIServer(groupIndex, config)
         }, windowDelay)
       } else {
@@ -1245,7 +1245,7 @@ function createVNCWindows (config, groupIndex) {
     groupItems.forEach((item, i) => {
       createOneWindow(item, i)
     })
-    createControlButtons(vncWindows[0] || null)
+    createControlButtons(vncWindows[0] || null, groupItems.length)
     if (!apiServer) startAPIServer(groupIndex, config)
   }
 }
