@@ -418,28 +418,35 @@ function injectControlButtons () {
         refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
         ['mousedown', 'mouseup', 'click'].forEach(function(et) {
           refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-        });
-        refreshBtn.addEventListener('click', function(e){
+refreshBtn.addEventListener('click', function(e){
           e.stopPropagation();
           e.preventDefault();
-          const apiUrl = 'http://127.0.0.1:${38980 + currentGroupIndex}/refresh';
-          const requestData = { windowIndex: ${i + 1} };
-          console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
           try {
+            const apiUrl = 'http://127.0.0.1:${38980 + currentGroupIndex}/refresh';
+            const requestData = { windowIndex: ${i + 1} };
+            console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
+            
+            // 添加 alert 提示
+            alert('刷新窗口 ${i + 1}: 正在发送请求到 ' + apiUrl);
+            
             fetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(requestData)
             }).then(function(res){
               console.log('[刷新按钮] 响应状态:', res.status);
+              alert('刷新窗口 ${i + 1}: 响应状态 ' + res.status);
               return res.text();
             }).then(function(text){
               console.log('[刷新按钮] 响应内容:', text);
+              alert('刷新窗口 ${i + 1}: 响应内容 ' + text);
             }).catch(function(err){
               console.error('[刷新按钮] 请求失败:', err);
+              alert('刷新窗口 ${i + 1}: 请求失败 - ' + err.message);
             });
           } catch(ex) {
             console.error('[刷新按钮] 异常:', ex);
+            alert('刷新窗口 ${i + 1}: 异常 - ' + ex.message);
           }
         }, true);
 
