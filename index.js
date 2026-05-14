@@ -297,8 +297,8 @@ function createControlButtons (parentWin) {
   controlBarWindow = new BrowserWindow({
     x: workArea.width - 150, y: workArea.height - 40,
     width: 140, height: 30,
-    frame: false, transparent: true, parent: parentWin,
-    alwaysOnTop: false, skipTaskbar: true, resizable: false,
+    frame: false, transparent: true,
+    alwaysOnTop: true, skipTaskbar: true, resizable: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
