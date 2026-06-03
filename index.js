@@ -272,23 +272,9 @@ function showGroupSelector (config) {
   })
 }
 
-// ========== 右下角控制栏（仅退出）==========
-// ★ parent绑定到VNC窗口，防止退出按钮跟随虚拟桌面(Ctrl+Win+方向键)移动
-function createControlButtons (windowCount = 5, parentWin = null) {
-  const workArea = screen.getPrimaryDisplay().workAreaSize
-  controlBarWindow = new BrowserWindow({
-    parent: parentWin || undefined,
-    x: workArea.width - 60, y: workArea.height - 40,
-    width: 50, height: 30,
-    frame: false, transparent: true,
-    alwaysOnTop: true, resizable: false,
-    skipTaskbar: true,
-    webPreferences: { nodeIntegration: true, contextIsolation: false }
-  })
-  controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:50px;height:30px;display:flex;justify-content:center;align-items:center}button{width:50px;height:30px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;background:#e94560}button:hover{background:#c23152}</style></head><body><button onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
-  controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-}
+// ========== 退出按钮已移到VNC页面内注入，不再创建独立窗口 ==========
+// 控制/退出按钮通过 did-finish-load 注入到每个VNC页面中
+function createControlButtons () { /* no-op: 退出按钮已在页面内注入 */ }
 
 // ★★★ 同步事件捕获注入（按需注入，关闭控制时移除）★★★
 function injectSyncCapture () {
@@ -378,6 +364,45 @@ function removeSyncCapture () {
 }
 
 // ========== 刷新按钮已在 did-finish-load 中自动注入，无需单独函数 ==========
+
+// ========== 设置窗口WS_EX_NOACTIVATE，防止DWM焦点黑色边框 ==========
+// ★ 使用PowerShell设置Windows扩展样式 WS_EX_NOACTIVATE (0x08000000)
+//   阻止Windows DWM在窗口获焦时绘制黑色边框
+//   Chromium内部鼠标/键盘事件不受影响，VNC交互正常
+function setWindowNoActivate (win) {
+  if (!win || win.isDestroyed()) return
+  const hwndBuf = win.getNativeWindowHandle()
+  let hwndHex
+  if (hwndBuf.length === 8) {
+    const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+    hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
+  } else {
+    hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
+  }
+  const psScript = `
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class U{[DllImport("user32.dll")]public static extern int SetWindowLong(IntPtr h,int n,int v);[DllImport("user32.dll")]public static extern int GetWindowLong(IntPtr h,int n);}'
+$hwnd = [IntPtr]0x${hwndHex}
+$GWL_EXSTYLE = -20
+$WS_EX_NOACTIVATE = 0x08000000
+$style = [U]::GetWindowLong($hwnd, $GWL_EXSTYLE)
+[U]::SetWindowLong($hwnd, $GWL_EXSTYLE, $style -bor $WS_EX_NOACTIVATE)
+Write-Host "OK_${hwndHex}"
+`
+  const tmpFile = path.join(app.getPath('temp'), `novnc_noact_${hwndHex}.ps1`)
+  try {
+    fs.writeFileSync(tmpFile, psScript, 'utf-8')
+    execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 10000 }, (err, stdout) => {
+      try { fs.unlinkSync(tmpFile) } catch (e) {}
+      if (err) {
+        console.log(`[WS_EX_NOACTIVATE] 窗口 ${hwndHex} 设置失败: ${err.message}`)
+      } else {
+        console.log(`[WS_EX_NOACTIVATE] 窗口 ${hwndHex} 设置成功: ${(stdout || '').trim()}`)
+      }
+    })
+  } catch (e) {
+    console.log(`[WS_EX_NOACTIVATE] 写入临时文件失败: ${e.message}`)
+  }
+}
 
 
 // ========== 固定横屏分辨率 ==========
@@ -514,6 +539,23 @@ function startAPIServer (groupIndex, config) {
       return
     }
 
+
+    // ★ 退出应用
+    if (req.method === 'POST' && req.url === '/exit') {
+      console.log('[API /exit] 收到退出请求')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{"ok":true}')
+      // 延迟退出，先返回响应
+      setTimeout(() => {
+        vncWindows.forEach(w => { try { w.destroy() } catch (e) {} })
+        vncWindows.length = 0
+        if (controlBarWindow) { try { controlBarWindow.destroy() } catch (e) {} controlBarWindow = null }
+        if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
+        app.quit()
+        process.exit(0)
+      }, 100)
+      return
+    }
 
     // ★ 外部控制命令
     if (req.method === 'POST') {
@@ -869,8 +911,6 @@ function createVNCWindows (config, groupIndex) {
     const x = offsetX + col * winW, y = row * winH
 
     // 创建直接显示noVNC的BrowserWindow
-    // ★ focusable:false 防止Windows DWM在窗口获焦时画黑色边框
-    //   Chromium内部鼠标/键盘事件不受影响，VNC交互正常
     const win = new BrowserWindow({
       x, y, width: winW, height: winH,
       show: true,
@@ -879,7 +919,6 @@ function createVNCWindows (config, groupIndex) {
       backgroundColor: '#000000',
       resizable: false,
       hasShadow: false,
-      focusable: false,
       title: item.title,
       webPreferences: {
         hardwareAcceleration: true,
@@ -926,6 +965,23 @@ function createVNCWindows (config, groupIndex) {
               } catch(ex) { console.error('[刷新按钮] 异常:', ex); }
             }, true);
             bar.appendChild(refreshBtn);
+            var exitBtn = document.createElement('div');
+            exitBtn.id = '__novnc_exit_btn';
+            exitBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#e94560;margin-left:4px;';
+            exitBtn.textContent = '退出';
+            exitBtn.addEventListener('mouseenter', function(){ exitBtn.style.opacity = '1'; });
+            exitBtn.addEventListener('mouseleave', function(){ exitBtn.style.opacity = '0.85'; });
+            ['mousedown', 'mouseup'].forEach(function(et) {
+              exitBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
+            });
+            exitBtn.addEventListener('click', function(e){
+              e.stopPropagation();
+              e.preventDefault();
+              try {
+                fetch('http://127.0.0.1:${apiPort}/exit', { method: 'POST' }).catch(function(err){ console.error('[退出按钮] 请求失败:', err); });
+              } catch(ex) { console.error('[退出按钮] 异常:', ex); }
+            }, true);
+            bar.appendChild(exitBtn);
             document.body.appendChild(bar);
           }
 
@@ -979,6 +1035,8 @@ function createVNCWindows (config, groupIndex) {
 
       // 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
       console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
+      // ★ 设置 WS_EX_NOACTIVATE 防止DWM焦点黑色边框
+      setWindowNoActivate(win)
     }, 1000)
 
     return win
