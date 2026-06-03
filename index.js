@@ -281,7 +281,7 @@ function createControlButtons (windowCount = 5) {
     width: 50, height: 30,
     frame: false, transparent: true,
     alwaysOnTop: false, resizable: false,
-    skipTaskbar: true, focusable: false,
+    skipTaskbar: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
@@ -379,11 +379,15 @@ function removeSyncCapture () {
 // ========== 刷新按钮已在 did-finish-load 中自动注入，无需单独函数 ==========
 
 // ========== 禁用DWM焦点黑色边框 ==========
-// ★ 方案：SetWindowCompositionAttribute 禁用accent + WS_EX_NOACTIVATE
-//   同时设置两种，确保DWM不在窗口获焦时绘制边框
-//   Chromium内部鼠标/键盘事件不受影响，VNC交互正常
+// ★ 核心方案：拦截 WM_NCACTIVATE 消息，强制 wParam=TRUE，让DWM认为窗口始终激活
+//   这样DWM不会在窗口失去焦点时绘制黑色过渡边框
+//   通过后台PowerShell进程持续运行，保持窗口子类化生效
+// ★ 不使用 WS_EX_NOACTIVATE（会导致窗口出现在所有虚拟桌面）
+const _focusFixProcesses = []
+
 function disableDwmFocusBorder (win) {
   if (!win || win.isDestroyed()) return
+  if (process.platform !== 'win32') return
   const hwndBuf = win.getNativeWindowHandle()
   let hwndHex
   if (hwndBuf.length === 8) {
@@ -392,40 +396,107 @@ function disableDwmFocusBorder (win) {
   } else {
     hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
   }
+
+  // ★ 方案1: DwmSetWindowAttribute 禁用NC渲染策略（一次性调用，不需要持久进程）
+  // ★ 方案2: SetWindowCompositionAttribute 禁用accent border
+  // ★ 方案3: 后台PowerShell子类化窗口，拦截WM_NCACTIVATE（最可靠）
   const psScript = `
-Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;
-public class DWM{
-  [DllImport("user32.dll")]public static extern int SetWindowLong(IntPtr h,int n,int v);
-  [DllImport("user32.dll")]public static extern int GetWindowLong(IntPtr h,int n);
-  [DllImport("user32.dll")]public static extern bool SetWindowCompositionAttribute(IntPtr h,ref ACCENT_POLICY p);
-  [StructLayout(LayoutKind.Sequential)]public struct ACCENT_POLICY{public int nAccentState;public int nFlags;public int nColor;public int nAnimationId;}
-}'
+Add-Type -TypeDefinition '
+using System;
+using System.Runtime.InteropServices;
+public class NoFocus {
+  [DllImport("dwmapi.dll")]
+  public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int sz);
+
+  [DllImport("user32.dll")]
+  public static extern bool SetWindowCompositionAttribute(IntPtr h, ref ACCENT_POLICY p);
+
+  [DllImport("user32.dll", EntryPoint="SetWindowLongPtr")]
+  public static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+  [DllImport("user32.dll", EntryPoint="SetWindowLong")]
+  public static extern IntPtr SetWindowLongPtr32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr CallWindowProc(IntPtr lpPrev, IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr DefWindowProc(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct ACCENT_POLICY {
+    public int nAccentState;
+    public int nFlags;
+    public int nColor;
+    public int nAnimationId;
+  }
+
+  delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+  static IntPtr _prevWndProc;
+  static WndProc _wndProc;
+
+  public static void Install(IntPtr hwnd) {
+    // 方法1: DwmSetWindowAttribute - 禁用DWM非客户区渲染
+    int val = 1; // DWMNCRP_DISABLED
+    DwmSetWindowAttribute(hwnd, 2, ref val, 4);
+
+    // 方法2: SetWindowCompositionAttribute - 禁用accent
+    ACCENT_POLICY policy;
+    policy.nAccentState = 0; // ACCENT_DISABLED
+    policy.nFlags = 2;
+    policy.nColor = 0;
+    policy.nAnimationId = 0;
+    SetWindowCompositionAttribute(hwnd, ref policy);
+
+    // 方法3: 子类化窗口，拦截WM_NCACTIVATE
+    _wndProc = new WndProc(MyWndProc);
+    IntPtr funcPtr = Marshal.GetFunctionPointerForDelegate(_wndProc);
+    if (IntPtr.Size == 8)
+      _prevWndProc = SetWindowLongPtr64(hwnd, -4, funcPtr);
+    else
+      _prevWndProc = SetWindowLongPtr32(hwnd, -4, funcPtr);
+  }
+
+  static IntPtr MyWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
+    const uint WM_NCACTIVATE = 0x0086;
+    if (msg == WM_NCACTIVATE && wParam == IntPtr.Zero) {
+      // 窗口失去焦点时，强制告诉DWM窗口仍然激活
+      return CallWindowProc(_prevWndProc, hWnd, msg, (IntPtr)1, lParam);
+    }
+    return CallWindowProc(_prevWndProc, hWnd, msg, wParam, lParam);
+  }
+}
+'
+
 $hwnd = [IntPtr]0x${hwndHex}
-# 1. WS_EX_NOACTIVATE: 防止窗口获得系统焦点
-$GWL_EXSTYLE = -20
-$WS_EX_NOACTIVATE = 0x08000000
-$style = [DWM]::GetWindowLong($hwnd, $GWL_EXSTYLE)
-[DWM]::SetWindowLong($hwnd, $GWL_EXSTYLE, $style -bor $WS_EX_NOACTIVATE)
-# 2. SetWindowCompositionAttribute: 禁用accent border (ACCENT_DISABLED=0)
-$policy = New-Object DWM+ACCENT_POLICY
-$policy.nAccentState = 0
-$policy.nFlags = 2
-$policy.nColor = 0
-$policy.nAnimationId = 0
-[DWM]::SetWindowCompositionAttribute($hwnd, [ref]$policy) | Out-Null
-Write-Host "OK_${hwndHex}"
+[NoFocus]::Install($hwnd)
+Write-Host "INSTALLED_${hwndHex}"
+# 保持进程运行，防止委托被GC回收导致崩溃
+while ($true) { Start-Sleep -Seconds 3600 }
 `
   const tmpFile = path.join(app.getPath('temp'), `novnc_dwmfix_${hwndHex}.ps1`)
   try {
     fs.writeFileSync(tmpFile, psScript, 'utf-8')
-    execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 10000 }, (err, stdout) => {
-      try { fs.unlinkSync(tmpFile) } catch (e) {}
-      if (err) {
-        console.log(`[DWM-FIX] 窗口 ${hwndHex} 设置失败: ${err.message}`)
+    // ★ 用 spawn 启动后台PowerShell进程（需要持续运行保持WM_NCACTIVATE拦截生效）
+    const { spawn } = require('child_process')
+    const ps = spawn('powershell.exe', [
+      '-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive',
+      '-WindowStyle', 'Hidden', '-File', tmpFile
+    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    ps.stdout.on('data', (d) => { output += d.toString() })
+    ps.stderr.on('data', (d) => { console.log(`[DWM-FIX] stderr: ${d.toString().trim()}`) })
+    ps.on('error', (err) => { console.log(`[DWM-FIX] 窗口 ${hwndHex} 启动失败: ${err.message}`) })
+    // 等待INSTALL确认
+    setTimeout(() => {
+      if (output.includes('INSTALLED')) {
+        console.log(`[DWM-FIX] 窗口 ${hwndHex} WM_NCACTIVATE拦截已安装成功`)
       } else {
-        console.log(`[DWM-FIX] 窗口 ${hwndHex} 设置成功: ${(stdout || '').trim()}`)
+        console.log(`[DWM-FIX] 窗口 ${hwndHex} 输出: ${(output || '').trim() || '(无输出)'}`)
       }
-    })
+    }, 5000)
+    // 保存进程引用，退出时清理
+    _focusFixProcesses.push(ps)
   } catch (e) {
     console.log(`[DWM-FIX] 写入临时文件失败: ${e.message}`)
   }
@@ -1123,6 +1194,10 @@ ipcMain.on('exit-app', () => {
   
   // 关闭控制栏
   if (controlBarWindow) { try { controlBarWindow.destroy() } catch (e) {} controlBarWindow = null }
+  
+  // 关闭DWM焦点修复的后台PowerShell进程
+  _focusFixProcesses.forEach(p => { try { p.kill() } catch (e) {} })
+  _focusFixProcesses.length = 0
   
   // 关闭 API 服务器
   if (apiServer) { try { apiServer.close() } catch (e) {} apiServer = null }
