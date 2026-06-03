@@ -274,6 +274,23 @@ function showGroupSelector (config) {
 
 
 
+// ========== 右下角退出按钮（独立窗口，parent绑定第一个VNC窗口，跟随虚拟桌面）==========
+function createExitButton () {
+  if (controlBarWindow && !controlBarWindow.isDestroyed()) return
+  const workArea = screen.getPrimaryDisplay().workAreaSize
+  controlBarWindow = new BrowserWindow({
+    x: workArea.width - 60, y: workArea.height - 40,
+    width: 50, height: 30,
+    frame: false, transparent: true,
+    parent: vncWindows[0] || null,
+    resizable: false, skipTaskbar: true,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  })
+  controlBarWindow.setMenu(null)
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:50px;height:30px;display:flex;justify-content:center;align-items:center}button{width:50px;height:30px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;background:#e94560}button:hover{background:#c23152}</style></head><body><button onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+}
+
 // ★★★ 同步事件捕获注入（按需注入，关闭控制时移除）★★★
 function injectSyncCapture () {
   const apiPort = 38980 + currentGroupIndex
@@ -926,27 +943,6 @@ function createVNCWindows (config, groupIndex) {
               } catch(ex) { console.error('[刷新按钮] 异常:', ex); }
             }, true);
             bar.appendChild(refreshBtn);
-            ${i === 0 ? `
-            // 只在第一个窗口注入退出按钮
-            var exitBtn = document.createElement('div');
-            exitBtn.id = '__novnc_exit_btn';
-            exitBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#e94560;';
-            exitBtn.textContent = '退出';
-            exitBtn.addEventListener('mouseenter', function(){ exitBtn.style.opacity = '1'; });
-            exitBtn.addEventListener('mouseleave', function(){ exitBtn.style.opacity = '0.85'; });
-            ['mousedown', 'mouseup'].forEach(function(et) {
-              exitBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-            });
-            exitBtn.addEventListener('click', function(e){
-              e.stopPropagation();
-              e.preventDefault();
-              try {
-                fetch('http://127.0.0.1:${apiPort}/exit', { method: 'POST' })
-                  .catch(function(err){ console.error('[退出按钮] 请求失败:', err); });
-              } catch(ex) { console.error('[退出按钮] 异常:', ex); }
-            }, true);
-            bar.appendChild(exitBtn);
-            ` : ''}
             document.body.appendChild(bar);
           }
 
@@ -1012,6 +1008,7 @@ function createVNCWindows (config, groupIndex) {
       if (i >= groupItems.length) {
 
         if (!apiServer) startAPIServer(groupIndex, config)
+        createExitButton()
         return
       }
       createOneWindow(groupItems[i], i)
@@ -1020,6 +1017,7 @@ function createVNCWindows (config, groupIndex) {
         setTimeout(() => {
   
           if (!apiServer) startAPIServer(groupIndex, config)
+          createExitButton()
         }, windowDelay)
       } else {
         setTimeout(() => createNextWindow(i + 1), windowDelay)
@@ -1032,6 +1030,7 @@ function createVNCWindows (config, groupIndex) {
       createOneWindow(item, i)
     })
     if (!apiServer) startAPIServer(groupIndex, config)
+    createExitButton()
   }
 }
 
