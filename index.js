@@ -222,7 +222,7 @@ function processTitleQueue () {
   // Add-Type只编译一次，所有窗口共享
   const psLines = [`Add-Type -TypeDefinition '${CSHARP_HELPER}'`]
   batch.forEach(({ hwndHex, title }) => {
-    psLines.push(`$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome Legacy Window',$null);if($c -eq [IntPtr]::Zero){$c=[W]::GetWindow([IntPtr]0x${hwndHex},5)};if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${title}');Write-Host 'OK_${hwndHex}'}else{Write-Host 'RETRY_${hwndHex}'}`)
+    psLines.push(`$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome_RenderWidgetHostHWND',$null);if($c -eq [IntPtr]::Zero){$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome Legacy Window',$null)};if($c -eq [IntPtr]::Zero){$c=[W]::GetWindow([IntPtr]0x${hwndHex},5)};if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${title}');Write-Host 'OK_${hwndHex}'}else{Write-Host 'RETRY_${hwndHex}'}`)
   })
   const psScript = psLines.join('\n')
   const tmpFile = path.join(app.getPath('temp'), 'novnc_title_batch.ps1')
@@ -909,6 +909,13 @@ function createVNCWindows (config, groupIndex) {
 
     win.setMenu(null)
     win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
+
+    // ★ 设置子窗口(Chrome_RenderWidgetHostHWND)标题
+    setTimeout(() => {
+      if (!win.isDestroyed()) {
+        setLayer2Title(win, item)
+      }
+    }, 2000)
 
     // 禁用 noVNC 的 setCapture + 注入刷新按钮 + 去掉窗口焦点灰色过渡
     win.webContents.on('did-finish-load', () => {
