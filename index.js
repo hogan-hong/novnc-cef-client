@@ -273,9 +273,11 @@ function showGroupSelector (config) {
 }
 
 // ========== 右下角控制栏（仅退出）==========
-function createControlButtons (windowCount = 5) {
+// ★ parent绑定到VNC窗口，防止退出按钮跟随虚拟桌面(Ctrl+Win+方向键)移动
+function createControlButtons (windowCount = 5, parentWin = null) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
+    parent: parentWin || undefined,
     x: workArea.width - 60, y: workArea.height - 40,
     width: 50, height: 30,
     frame: false, transparent: true,
@@ -850,10 +852,9 @@ function createVNCWindows (config, groupIndex) {
 
   const workArea = screen.getPrimaryDisplay().workAreaSize
   const winW = 853, winH = 500
-  const overlap = 1  // 窗口间重叠1px，遮盖Windows DWM焦点灰色边框
-  const cols = Math.min(groupItems.length, Math.floor(workArea.width / (winW - overlap)))
+  const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
   const rows = Math.ceil(groupItems.length / cols)
-  const offsetX = Math.floor((workArea.width - cols * (winW - overlap)) / 2)
+  const offsetX = Math.floor((workArea.width - cols * winW) / 2)
   const apiPort = 38980 + groupIndex
 
   // ★ 读取命令行参数 --delay=毫秒，设置窗口创建间隔，默认0(同时创建)
@@ -865,9 +866,11 @@ function createVNCWindows (config, groupIndex) {
 
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
-    const x = offsetX + col * (winW - overlap), y = row * (winH - overlap)
+    const x = offsetX + col * winW, y = row * winH
 
     // 创建直接显示noVNC的BrowserWindow
+    // ★ focusable:false 防止Windows DWM在窗口获焦时画黑色边框
+    //   Chromium内部鼠标/键盘事件不受影响，VNC交互正常
     const win = new BrowserWindow({
       x, y, width: winW, height: winH,
       show: true,
@@ -876,6 +879,7 @@ function createVNCWindows (config, groupIndex) {
       backgroundColor: '#000000',
       resizable: false,
       hasShadow: false,
+      focusable: false,
       title: item.title,
       webPreferences: {
         hardwareAcceleration: true,
@@ -895,11 +899,6 @@ function createVNCWindows (config, groupIndex) {
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
         (function() {
-          // 去掉焦点outline和Windows系统focus ring
-          var style = document.createElement('style');
-          style.textContent = '*:focus { outline: none !important; box-shadow: none !important; } * { -webkit-focus-ring-color: transparent !important; }';
-          document.head.appendChild(style);
-
           // 自动注入刷新按钮
           var existingBar = document.getElementById('__novnc_control_bar');
           if (!existingBar) {
@@ -989,7 +988,7 @@ function createVNCWindows (config, groupIndex) {
     // ★ 有间隔：逐个创建，每个间隔 windowDelay 毫秒
     function createNextWindow(i) {
       if (i >= groupItems.length) {
-        createControlButtons(groupItems.length)
+        createControlButtons(groupItems.length, vncWindows[0] || null)
         if (!apiServer) startAPIServer(groupIndex, config)
         return
       }
@@ -997,7 +996,7 @@ function createVNCWindows (config, groupIndex) {
       if (i === groupItems.length - 1) {
         // 最后一个窗口创建完后，等间隔再初始化控制栏
         setTimeout(() => {
-          createControlButtons(groupItems.length)
+          createControlButtons(groupItems.length, vncWindows[0] || null)
           if (!apiServer) startAPIServer(groupIndex, config)
         }, windowDelay)
       } else {
@@ -1010,7 +1009,7 @@ function createVNCWindows (config, groupIndex) {
     groupItems.forEach((item, i) => {
       createOneWindow(item, i)
     })
-    createControlButtons(groupItems.length)
+    createControlButtons(groupItems.length, vncWindows[0] || null)
     if (!apiServer) startAPIServer(groupIndex, config)
   }
 }
