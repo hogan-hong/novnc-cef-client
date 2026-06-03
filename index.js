@@ -272,9 +272,22 @@ function showGroupSelector (config) {
   })
 }
 
-// ========== 退出按钮已移到VNC页面内注入，不再创建独立窗口 ==========
-// 控制/退出按钮通过 did-finish-load 注入到每个VNC页面中
-function createControlButtons () { /* no-op: 退出按钮已在页面内注入 */ }
+// ========== 右下角退出按钮（独立窗口，不跟随虚拟桌面）==========
+// ★ 不设 alwaysOnTop，不设 parent → 不跟随虚拟桌面切换
+function createControlButtons (windowCount = 5) {
+  const workArea = screen.getPrimaryDisplay().workAreaSize
+  controlBarWindow = new BrowserWindow({
+    x: workArea.width - 60, y: workArea.height - 40,
+    width: 50, height: 30,
+    frame: false, transparent: true,
+    alwaysOnTop: false, resizable: false,
+    skipTaskbar: true, focusable: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  })
+  controlBarWindow.setMenu(null)
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:50px;height:30px;display:flex;justify-content:center;align-items:center}button{width:50px;height:30px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;background:#e94560}button:hover{background:#c23152}</style></head><body><button onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+}
 
 // ★★★ 同步事件捕获注入（按需注入，关闭控制时移除）★★★
 function injectSyncCapture () {
@@ -365,11 +378,11 @@ function removeSyncCapture () {
 
 // ========== 刷新按钮已在 did-finish-load 中自动注入，无需单独函数 ==========
 
-// ========== 设置窗口WS_EX_NOACTIVATE，防止DWM焦点黑色边框 ==========
-// ★ 使用PowerShell设置Windows扩展样式 WS_EX_NOACTIVATE (0x08000000)
-//   阻止Windows DWM在窗口获焦时绘制黑色边框
+// ========== 禁用DWM焦点黑色边框 ==========
+// ★ 方案：SetWindowCompositionAttribute 禁用accent + WS_EX_NOACTIVATE
+//   同时设置两种，确保DWM不在窗口获焦时绘制边框
 //   Chromium内部鼠标/键盘事件不受影响，VNC交互正常
-function setWindowNoActivate (win) {
+function disableDwmFocusBorder (win) {
   if (!win || win.isDestroyed()) return
   const hwndBuf = win.getNativeWindowHandle()
   let hwndHex
@@ -380,27 +393,41 @@ function setWindowNoActivate (win) {
     hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
   }
   const psScript = `
-Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class U{[DllImport("user32.dll")]public static extern int SetWindowLong(IntPtr h,int n,int v);[DllImport("user32.dll")]public static extern int GetWindowLong(IntPtr h,int n);}'
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;
+public class DWM{
+  [DllImport("user32.dll")]public static extern int SetWindowLong(IntPtr h,int n,int v);
+  [DllImport("user32.dll")]public static extern int GetWindowLong(IntPtr h,int n);
+  [DllImport("user32.dll")]public static extern bool SetWindowCompositionAttribute(IntPtr h,ref ACCENT_POLICY p);
+  [StructLayout(LayoutKind.Sequential)]public struct ACCENT_POLICY{public int nAccentState;public int nFlags;public int nColor;public int nAnimationId;}
+}'
 $hwnd = [IntPtr]0x${hwndHex}
+# 1. WS_EX_NOACTIVATE: 防止窗口获得系统焦点
 $GWL_EXSTYLE = -20
 $WS_EX_NOACTIVATE = 0x08000000
-$style = [U]::GetWindowLong($hwnd, $GWL_EXSTYLE)
-[U]::SetWindowLong($hwnd, $GWL_EXSTYLE, $style -bor $WS_EX_NOACTIVATE)
+$style = [DWM]::GetWindowLong($hwnd, $GWL_EXSTYLE)
+[DWM]::SetWindowLong($hwnd, $GWL_EXSTYLE, $style -bor $WS_EX_NOACTIVATE)
+# 2. SetWindowCompositionAttribute: 禁用accent border (ACCENT_DISABLED=0)
+$policy = New-Object DWM+ACCENT_POLICY
+$policy.nAccentState = 0
+$policy.nFlags = 2
+$policy.nColor = 0
+$policy.nAnimationId = 0
+[DWM]::SetWindowCompositionAttribute($hwnd, [ref]$policy) | Out-Null
 Write-Host "OK_${hwndHex}"
 `
-  const tmpFile = path.join(app.getPath('temp'), `novnc_noact_${hwndHex}.ps1`)
+  const tmpFile = path.join(app.getPath('temp'), `novnc_dwmfix_${hwndHex}.ps1`)
   try {
     fs.writeFileSync(tmpFile, psScript, 'utf-8')
     execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 10000 }, (err, stdout) => {
       try { fs.unlinkSync(tmpFile) } catch (e) {}
       if (err) {
-        console.log(`[WS_EX_NOACTIVATE] 窗口 ${hwndHex} 设置失败: ${err.message}`)
+        console.log(`[DWM-FIX] 窗口 ${hwndHex} 设置失败: ${err.message}`)
       } else {
-        console.log(`[WS_EX_NOACTIVATE] 窗口 ${hwndHex} 设置成功: ${(stdout || '').trim()}`)
+        console.log(`[DWM-FIX] 窗口 ${hwndHex} 设置成功: ${(stdout || '').trim()}`)
       }
     })
   } catch (e) {
-    console.log(`[WS_EX_NOACTIVATE] 写入临时文件失败: ${e.message}`)
+    console.log(`[DWM-FIX] 写入临时文件失败: ${e.message}`)
   }
 }
 
@@ -965,23 +992,6 @@ function createVNCWindows (config, groupIndex) {
               } catch(ex) { console.error('[刷新按钮] 异常:', ex); }
             }, true);
             bar.appendChild(refreshBtn);
-            var exitBtn = document.createElement('div');
-            exitBtn.id = '__novnc_exit_btn';
-            exitBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#e94560;margin-left:4px;';
-            exitBtn.textContent = '退出';
-            exitBtn.addEventListener('mouseenter', function(){ exitBtn.style.opacity = '1'; });
-            exitBtn.addEventListener('mouseleave', function(){ exitBtn.style.opacity = '0.85'; });
-            ['mousedown', 'mouseup'].forEach(function(et) {
-              exitBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-            });
-            exitBtn.addEventListener('click', function(e){
-              e.stopPropagation();
-              e.preventDefault();
-              try {
-                fetch('http://127.0.0.1:${apiPort}/exit', { method: 'POST' }).catch(function(err){ console.error('[退出按钮] 请求失败:', err); });
-              } catch(ex) { console.error('[退出按钮] 异常:', ex); }
-            }, true);
-            bar.appendChild(exitBtn);
             document.body.appendChild(bar);
           }
 
@@ -1035,8 +1045,8 @@ function createVNCWindows (config, groupIndex) {
 
       // 格式化输出：窗口序号 | 窗口标题 | 句柄(10进制，大漠绑定格式)
       console.log(`窗口 ${i + 1}: 标题="${item.title}" HWND=${hwndDec}`)
-      // ★ 设置 WS_EX_NOACTIVATE 防止DWM焦点黑色边框
-      setWindowNoActivate(win)
+      // ★ 禁用DWM焦点黑色边框（延迟2秒确保窗口完全创建后再设置）
+      setTimeout(() => disableDwmFocusBorder(win), 2000)
     }, 1000)
 
     return win
