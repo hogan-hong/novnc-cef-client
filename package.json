@@ -1,13 +1,11 @@
 {
   "name": "novnc-cef-client",
   "version": "1.0.0",
-  "description": "CEF-based NoVNC client with auto-connect and GPU acceleration",
+  "description": "基于Electron的NoVNC多窗口群控客户端",
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "node scripts/build-win.js",
-    "build:native": "node-gyp rebuild",
-    "rebuild": "npm run build:native"
+    "build:win": "electron-builder --win --publish never --config.compression=store"
   },
   "build": {
     "appId": "com.hogan.novncclient",
@@ -16,7 +14,6 @@
     "files": [
       "**/*",
       "!*.md",
-      "!binding.gyp",
       "!配置文件.int"
     ],
     "extraResources": [
@@ -41,8 +38,7 @@
   "type": "commonjs",
   "devDependencies": {
     "electron": "^41.3.0",
-    "electron-builder": "^26.8.1",
-    "node-gyp": "^11.0.0"
+    "electron-builder": "^26.8.1"
   },
   "dependencies": {
     "iconv-lite": "^0.7.2"
