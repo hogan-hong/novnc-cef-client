@@ -92,6 +92,7 @@ app.commandLine.appendSwitch('enable-zero-copy')
 
 // ========== 全局状态 ==========
 let controlMode = false        // 控制模式：每个窗口显示主控+刷新按钮
+let currentConfig = null       // 当前配置（groups + items），供API查询
 let currentGroupIndex = 1
 const vncWindows = []          // VNC窗口数组（直接显示noVNC）
 let apiServer = null
@@ -614,6 +615,29 @@ function startAPIServer (groupIndex, config) {
       }))
       return
     }
+
+    // ★ 返回当前群控客户端的窗口列表（含控制IP），供同步器查询
+    if (req.method === 'GET' && req.url === '/windows') {
+      const startIdx = (currentGroupIndex - 1) * 5
+      const groupItems = currentConfig ? currentConfig.items.slice(startIdx, startIdx + 5) : []
+      const windows = groupItems.map((item, i) => ({
+        index: item.index,
+        title: item.title,
+        controlIP: item.controlIP,
+        url: item.url,
+        alive: !!(vncWindows[i] && !vncWindows[i].isDestroyed())
+      }))
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        success: true,
+        groupIndex: currentGroupIndex,
+        groupName: (currentConfig && currentConfig.groups.find(g => g.index === currentGroupIndex)) ? currentConfig.groups.find(g => g.index === currentGroupIndex).name : null,
+        windowCount: vncWindows.length,
+        port,
+        windows
+      }))
+      return
+    }
     res.writeHead(404); res.end('Not Found')
   })
   server.listen(port, '0.0.0.0', () => console.log(`API + Sync on http://0.0.0.0:${port}`))
@@ -865,6 +889,7 @@ function sendToVNC (winIdx, data) {
 
 // ========== 创建VNC窗口 ==========
 function createVNCWindows (config, groupIndex) {
+  currentConfig = config  // 保存配置供API查询
   if (selectWindow) { selectWindow.close(); selectWindow = null }
   const startIdx = (groupIndex - 1) * 5
   const groupItems = config.items.slice(startIdx, startIdx + 5)
