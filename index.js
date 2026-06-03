@@ -281,7 +281,7 @@ function createExitButton () {
   controlBarWindow = new BrowserWindow({
     x: workArea.width - 60, y: workArea.height - 40,
     width: 50, height: 30,
-    frame: false, transparent: true,
+    frame: false, transparent: true, hasShadow: false,
     parent: vncWindows[0] || null,
     resizable: false, skipTaskbar: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
