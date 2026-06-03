@@ -272,19 +272,19 @@ function showGroupSelector (config) {
   })
 }
 
-// ========== 右下角控制栏（控制 + 退出）==========
-function createControlButtons (parentWin, windowCount = 5, windowTitles = []) {
+// ========== 右下角控制栏（仅退出）==========
+function createControlButtons (windowCount = 5) {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   controlBarWindow = new BrowserWindow({
-    x: workArea.width - 110, y: workArea.height - 40,
-    width: 100, height: 30,
+    x: workArea.width - 60, y: workArea.height - 40,
+    width: 50, height: 30,
     frame: false, transparent: true,
     alwaysOnTop: true, resizable: false,
-    parent: parentWin,  // 设置父窗口，跟随辅助窗口
+    skipTaskbar: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
   controlBarWindow.setMenu(null)
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:100px;height:30px;display:flex;gap:4px;justify-content:center;align-items:center}button{flex:1;height:30px;width:48px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;white-space:nowrap}#controlBtn{background:#28a745}#controlBtn:hover{background:#218838}#controlBtn.active{background:#dc3545}#controlBtn.active:hover{background:#c82333}#exitBtn{background:#e94560}#exitBtn:hover{background:#c23152}</style></head><body><button id="controlBtn" onclick="toggleControl()">控制</button><button id="exitBtn" onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');let c=false;function toggleControl(){c=!c;const b=document.getElementById('controlBtn');if(c){b.textContent='关闭控制';b.classList.add('active')}else{b.textContent='控制';b.classList.remove('active')}ipcRenderer.send('toggle-control',c)}function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:transparent;width:50px;height:30px;display:flex;justify-content:center;align-items:center}button{width:50px;height:30px;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;font-family:"Microsoft YaHei",sans-serif;background:#e94560}button:hover{background:#c23152}</style></head><body><button onclick="quit()">退出</button><script>const{ipcRenderer}=require('electron');function quit(){ipcRenderer.send('exit-app')}</script></body></html>`
   controlBarWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
 
@@ -375,147 +375,8 @@ function removeSyncCapture () {
   })
 }
 
-// ========== 控制按钮：在每个VNC窗口内注入（刷新）==========
-function injectControlButtons () {
-  var apiPort = 38980 + currentGroupIndex;
-  vncWindows.forEach((win, i) => {
-    if (!win || win.isDestroyed()) return
-    var windowIndex = i + 1;
-    win.webContents.executeJavaScript(`
-      (function() {
-        // 避免重复注入：已有控制栏时显示
-        var existingBar = document.getElementById('__novnc_control_bar');
-        if (existingBar) {
-          existingBar.style.display = 'flex';
-          return;
-        }
-        var bar = document.createElement('div');
-        bar.id = '__novnc_control_bar';
-        bar.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;display:flex;gap:4px;';
+// ========== 刷新按钮已在 did-finish-load 中自动注入，无需单独函数 ==========
 
-        // 刷新按钮
-        var refreshBtn = document.createElement('div');
-        refreshBtn.id = '__novnc_refresh_btn';
-        refreshBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#007bff;';
-        refreshBtn.textContent = '刷新';
-        refreshBtn.addEventListener('mouseenter', function(){ refreshBtn.style.opacity = '1'; });
-        refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
-        ['mousedown', 'mouseup'].forEach(function(et) {
-          refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-        });
-        refreshBtn.addEventListener('click', function(e){
-          e.stopPropagation();
-          e.preventDefault();
-          try {
-            var apiUrl = 'http://127.0.0.1:${apiPort}/refresh';
-            var requestData = { windowIndex: ${windowIndex} };
-            console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
-
-            fetch(apiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(requestData)
-            }).then(function(res){
-              console.log('[刷新按钮] 响应状态:', res.status);
-              return res.text();
-            }).then(function(text){
-              console.log('[刷新按钮] 响应内容:', text);
-            }).catch(function(err){
-              console.error('[刷新按钮] 请求失败:', err);
-            });
-          } catch(ex) {
-            console.error('[刷新按钮] 异常:', ex);
-          }
-        }, true);
-
-        bar.appendChild(refreshBtn);
-        document.body.appendChild(bar);
-      })()
-    `).catch(() => {})
-  })
-}
-
-function removeControlButtons () {
-  vncWindows.forEach((win) => {
-    if (!win || win.isDestroyed()) return
-    win.webContents.executeJavaScript(`
-      var bar = document.getElementById('__novnc_control_bar');
-      if (bar) bar.style.display = 'none';
-    `).catch(() => {})
-  })
-}
-
-
-
-// ========== 控制按钮：在每个VNC窗口内注入（刷新）==========
-function injectControlButtons () {
-  var apiPort = 38980 + currentGroupIndex;
-  vncWindows.forEach((win, i) => {
-    if (!win || win.isDestroyed()) return
-    var windowIndex = i + 1;
-    win.webContents.executeJavaScript(`
-      (function() {
-        // 避免重复注入：已有控制栏时显示
-        var existingBar = document.getElementById('__novnc_control_bar');
-        if (existingBar) {
-          existingBar.style.display = 'flex';
-          return;
-        }
-        var bar = document.createElement('div');
-        bar.id = '__novnc_control_bar';
-        bar.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;display:flex;gap:4px;';
-
-        // 刷新按钮
-        var refreshBtn = document.createElement('div');
-        refreshBtn.id = '__novnc_refresh_btn';
-        refreshBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#007bff;';
-        refreshBtn.textContent = '刷新';
-        refreshBtn.addEventListener('mouseenter', function(){ refreshBtn.style.opacity = '1'; });
-        refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
-        ['mousedown', 'mouseup'].forEach(function(et) {
-          refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
-        });
-        refreshBtn.addEventListener('click', function(e){
-          e.stopPropagation();
-          e.preventDefault();
-          try {
-            var apiUrl = 'http://127.0.0.1:${apiPort}/refresh';
-            var requestData = { windowIndex: ${windowIndex} };
-            console.log('[刷新按钮] 发送请求:', apiUrl, requestData);
-
-            fetch(apiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(requestData)
-            }).then(function(res){
-              console.log('[刷新按钮] 响应状态:', res.status);
-              return res.text();
-            }).then(function(text){
-              console.log('[刷新按钮] 响应内容:', text);
-            }).catch(function(err){
-              console.error('[刷新按钮] 请求失败:', err);
-            });
-          } catch(ex) {
-            console.error('[刷新按钮] 异常:', ex);
-          }
-        }, true);
-
-        bar.appendChild(refreshBtn);
-        document.body.appendChild(bar);
-      })()
-    `).catch(() => {})
-  })
-}
-
-function removeControlButtons () {
-  vncWindows.forEach((win) => {
-    if (!win || win.isDestroyed()) return
-    win.webContents.executeJavaScript(`
-      var bar = document.getElementById('__novnc_control_bar');
-      if (bar) bar.style.display = 'none';
-    `).catch(() => {})
-  })
-}
 
 // ========== 固定横屏分辨率 ==========
 // API坐标基于客户端分辨率 856×480
@@ -989,9 +850,10 @@ function createVNCWindows (config, groupIndex) {
 
   const workArea = screen.getPrimaryDisplay().workAreaSize
   const winW = 853, winH = 500
-  const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
+  const overlap = 1  // 窗口间重叠1px，遮盖Windows DWM焦点灰色边框
+  const cols = Math.min(groupItems.length, Math.floor(workArea.width / (winW - overlap)))
   const rows = Math.ceil(groupItems.length / cols)
-  const offsetX = Math.floor((workArea.width - cols * winW) / 2)
+  const offsetX = Math.floor((workArea.width - cols * (winW - overlap)) / 2)
   const apiPort = 38980 + groupIndex
 
   // ★ 读取命令行参数 --delay=毫秒，设置窗口创建间隔，默认0(同时创建)
@@ -1003,7 +865,7 @@ function createVNCWindows (config, groupIndex) {
 
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
-    const x = offsetX + col * winW, y = row * winH
+    const x = offsetX + col * (winW - overlap), y = row * (winH - overlap)
 
     // 创建直接显示noVNC的BrowserWindow
     const win = new BrowserWindow({
@@ -1013,6 +875,7 @@ function createVNCWindows (config, groupIndex) {
       transparent: false,
       backgroundColor: '#000000',
       resizable: false,
+      hasShadow: false,
       title: item.title,
       webPreferences: {
         hardwareAcceleration: true,
@@ -1026,14 +889,46 @@ function createVNCWindows (config, groupIndex) {
     win.setMenu(null)
     win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
 
-    // 禁用 noVNC 的 setCapture 机制 + 去掉窗口焦点灰色过渡
+    // 禁用 noVNC 的 setCapture + 注入刷新按钮 + 去掉窗口焦点灰色过渡
     win.webContents.on('did-finish-load', () => {
+      const apiPort = 38980 + currentGroupIndex
+      const windowIndex = i + 1
       win.webContents.executeJavaScript(`
         (function() {
-          // 去掉焦点outline，避免窗口灰色过渡边框
+          // 去掉焦点outline和Windows系统focus ring
           var style = document.createElement('style');
-          style.textContent = '* { outline: none !important; } :focus { outline: none !important; } ::-webkit-focus-ring { display: none !important; }';
+          style.textContent = '*:focus { outline: none !important; box-shadow: none !important; } * { -webkit-focus-ring-color: transparent !important; }';
           document.head.appendChild(style);
+
+          // 自动注入刷新按钮
+          var existingBar = document.getElementById('__novnc_control_bar');
+          if (!existingBar) {
+            var bar = document.createElement('div');
+            bar.id = '__novnc_control_bar';
+            bar.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:999999;display:flex;gap:4px;';
+            var refreshBtn = document.createElement('div');
+            refreshBtn.id = '__novnc_refresh_btn';
+            refreshBtn.style.cssText = 'padding:4px 10px;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;font-family:"Microsoft YaHei",sans-serif;cursor:pointer;user-select:none;opacity:0.85;transition:opacity 0.2s;background:#007bff;';
+            refreshBtn.textContent = '刷新';
+            refreshBtn.addEventListener('mouseenter', function(){ refreshBtn.style.opacity = '1'; });
+            refreshBtn.addEventListener('mouseleave', function(){ refreshBtn.style.opacity = '0.85'; });
+            ['mousedown', 'mouseup'].forEach(function(et) {
+              refreshBtn.addEventListener(et, function(e){ e.stopPropagation(); e.preventDefault(); }, true);
+            });
+            refreshBtn.addEventListener('click', function(e){
+              e.stopPropagation();
+              e.preventDefault();
+              try {
+                fetch('http://127.0.0.1:${apiPort}/refresh', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ windowIndex: ${windowIndex} })
+                }).catch(function(err){ console.error('[刷新按钮] 请求失败:', err); });
+              } catch(ex) { console.error('[刷新按钮] 异常:', ex); }
+            }, true);
+            bar.appendChild(refreshBtn);
+            document.body.appendChild(bar);
+          }
 
           var screen = document.getElementById('screen');
           if (!screen) return;
@@ -1094,7 +989,7 @@ function createVNCWindows (config, groupIndex) {
     // ★ 有间隔：逐个创建，每个间隔 windowDelay 毫秒
     function createNextWindow(i) {
       if (i >= groupItems.length) {
-        createControlButtons(vncWindows[0] || null, groupItems.length)
+        createControlButtons(groupItems.length)
         if (!apiServer) startAPIServer(groupIndex, config)
         return
       }
@@ -1102,7 +997,7 @@ function createVNCWindows (config, groupIndex) {
       if (i === groupItems.length - 1) {
         // 最后一个窗口创建完后，等间隔再初始化控制栏
         setTimeout(() => {
-          createControlButtons(vncWindows[0] || null, groupItems.length)
+          createControlButtons(groupItems.length)
           if (!apiServer) startAPIServer(groupIndex, config)
         }, windowDelay)
       } else {
@@ -1115,7 +1010,7 @@ function createVNCWindows (config, groupIndex) {
     groupItems.forEach((item, i) => {
       createOneWindow(item, i)
     })
-    createControlButtons(vncWindows[0] || null, groupItems.length)
+    createControlButtons(groupItems.length)
     if (!apiServer) startAPIServer(groupIndex, config)
   }
 }
@@ -1142,18 +1037,14 @@ ipcMain.on('select-group', (event, groupIndex) => {
   if (config) createVNCWindows(config, groupIndex)
 })
 
-// ★ 控制模式切换：点击右下角"控制"按钮
+// ★ 控制模式切换（仅同步事件，刷新按钮始终显示）
 ipcMain.on('toggle-control', (event, enabled) => {
   controlMode = enabled
   if (enabled) {
-    // 开启控制模式：注入同步事件捕获和刷新按钮
     injectSyncCapture()
-    injectControlButtons()
     console.log('控制模式开启')
   } else {
-    // 关闭控制模式：移除同步事件捕获和刷新按钮
     removeSyncCapture()
-    removeControlButtons()
     console.log('控制模式关闭')
   }
 })
