@@ -956,8 +956,13 @@ function createVNCWindows (config, groupIndex) {
       }
     }, 2000)
 
-    // 禁用 noVNC 的 setCapture + 注入刷新按钮 + 去掉窗口焦点灰色过渡
+    // ★ VNC自动重连后也会触发did-finish-load，重新设置标题
     win.webContents.on('did-finish-load', () => {
+      win.setTitle(item.title)
+      // 延迟重设第二层窗口标题
+      setTimeout(() => {
+        if (!win.isDestroyed()) setLayer2Title(win, item)
+      }, 2000)
       const apiPort = 38980 + currentGroupIndex
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
