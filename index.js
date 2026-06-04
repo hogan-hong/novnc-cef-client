@@ -252,10 +252,10 @@ function setLayer2Title (win, item) {
 // ========== 选组界面 ==========
 function showGroupSelector (config) {
   selectWindow = new BrowserWindow({
-    width: 200,
-    height: 80,
+    width: 520,
+    height: 120 + config.groups.length * 70,
     show: false,
-    frame: false,
+    frame: true,
     title: 'NoVNC 群控 - 选择分组',
     resizable: false,
     alwaysOnTop: true,
@@ -263,18 +263,11 @@ function showGroupSelector (config) {
   })
   selectWindow.setMenu(null)
   selectWindow.center()
-  let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f5f7fa;color:#333;display:flex;align-items:center;justify-content:center;padding:5px;-webkit-app-region:drag}
-    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 18px;margin:0 5px;font-size:13px;font-weight:600;color:#fff;background:#4a7fff;border:none;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag;white-space:nowrap}
-    .group-btn:hover{background:#3a6fee;box-shadow:0 2px 8px rgba(74,127,255,.35)}
-    .group-btn:active{transform:scale(.97)}
-  </style></head><body>
-    <div style="display:flex;flex-wrap:nowrap;justify-content:center;-webkit-app-region:no-drag">`
-  config.groups.forEach((g) => { html += `<button class="group-btn" onclick="selectGroup(${g.index})">${g.name}组</button>` })
-  html += `</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}requestAnimationFrame(()=>{requestAnimationFrame(()=>{ipcRenderer.send('select-resize',document.documentElement.scrollWidth,document.documentElement.scrollHeight)})})</script></body></html>`
+  let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Microsoft YaHei",sans-serif;background:#1a1a2e;color:#eee;padding:20px}h2{text-align:center;margin-bottom:18px;color:#e94560;font-size:18px}.group-btn{display:block;width:100%;padding:14px;margin-bottom:12px;font-size:16px;font-weight:bold;color:#fff;background:#16213e;border:2px solid #e94560;border-radius:8px;cursor:pointer}.group-btn:hover{background:#e94560}</style></head><body><h2>选择要启动的分组</h2>`
+  config.groups.forEach((g) => { const s = (g.index - 1) * 5 + 1, e = g.index * 5; html += `<button class="group-btn" onclick="selectGroup(${g.index})">控制 ${g.name} 组（编号 ${s}-${e}）</button>\n` })
+  html += `<script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-  // ★ 主进程监听ESC，比渲染进程keydown更可靠（不受-webkit-app-region:drag影响）
+  // ★ 主进程监听ESC
   selectWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'Escape') {
       if (selectWindow && !selectWindow.isDestroyed()) selectWindow.close()
@@ -1113,12 +1106,6 @@ app.whenReady().then(() => {
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
   app.on('activate', () => {})
-})
-
-ipcMain.on('select-resize', (event, contentWidth, contentHeight) => {
-  if (!selectWindow || selectWindow.isDestroyed()) return
-  selectWindow.setContentSize(contentWidth, contentHeight)
-  selectWindow.center()
 })
 
 ipcMain.on('select-group', (event, groupIndex) => {
