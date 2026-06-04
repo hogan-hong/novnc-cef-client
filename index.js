@@ -253,7 +253,7 @@ function setLayer2Title (win, item) {
 function showGroupSelector (config) {
   selectWindow = new BrowserWindow({
     width: 300,
-    height: 70 + config.groups.length * 46,
+    height: 100,
     show: false,
     frame: false,
     title: 'NoVNC 群控 - 选择分组',
@@ -273,7 +273,7 @@ function showGroupSelector (config) {
   </style></head><body><div class="hint">ESC 退出</div>
     <div style="display:flex;flex-wrap:wrap;justify-content:center;-webkit-app-region:no-drag">`
   config.groups.forEach((g) => { html += `<button class="group-btn" onclick="selectGroup(${g.index})">${g.name}组</button>` })
-  html += `</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}document.addEventListener('keydown',e=>{if(e.key==='Escape'){ipcRenderer.send('select-group',-1)}})</script></body></html>`
+  html += `</div><script>const{ipcRenderer}=require('electron');const{remote}=require('@electron/remote')||{};function selectGroup(i){ipcRenderer.send('select-group',i)}document.addEventListener('keydown',e=>{if(e.key==='Escape'){ipcRenderer.send('select-group',-1)}});requestAnimationFrame(()=>{requestAnimationFrame(()=>{const h=document.documentElement.scrollHeight;ipcRenderer.send('select-resize',h)})})</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
   selectWindow.once('ready-to-show', () => {
     selectWindow.show()
@@ -1107,6 +1107,13 @@ app.whenReady().then(() => {
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
   app.on('activate', () => {})
+})
+
+ipcMain.on('select-resize', (event, contentHeight) => {
+  if (!selectWindow || selectWindow.isDestroyed()) return
+  const bounds = selectWindow.getBounds()
+  selectWindow.setSize(bounds.width, contentHeight + 30)
+  selectWindow.center()
 })
 
 ipcMain.on('select-group', (event, groupIndex) => {
