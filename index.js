@@ -501,6 +501,20 @@ function startAPIServer (groupIndex, config) {
               console.log(`刷新窗口 ${refreshIdx + 1} 画面`)
               refreshWin.webContents.reload()
               console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 重新加载已发送`)
+              // ★ 刷新后重新设置子窗口标题（reload后Chrome Legacy Window标题会重置）
+              const startIdx = (currentGroupIndex - 1) * 5
+              const item = currentConfig ? currentConfig.items[startIdx + refreshIdx] : null
+              if (item) {
+                refreshWin.webContents.once('did-finish-load', () => {
+                  setTimeout(() => {
+                    if (!refreshWin.isDestroyed()) {
+                      refreshWin.setTitle(item.title)
+                      setLayer2Title(refreshWin, item)
+                      console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 标题已重设: ${item.title}`)
+                    }
+                  }, 2000)
+                })
+              }
             } else {
               console.error(`[API /refresh] 窗口 ${refreshIdx + 1} 已销毁或不存在`)
             }
