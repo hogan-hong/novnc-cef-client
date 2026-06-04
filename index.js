@@ -252,10 +252,10 @@ function setLayer2Title (win, item) {
 // ========== 选组界面 ==========
 function showGroupSelector (config) {
   selectWindow = new BrowserWindow({
-    width: 480,
-    height: 140 + config.groups.length * 72,
+    width: 260,
+    height: 60 + config.groups.length * 48,
     show: false,
-    frame: true,
+    frame: false,
     title: 'NoVNC 群控 - 选择分组',
     resizable: false,
     alwaysOnTop: true,
@@ -265,20 +265,13 @@ function showGroupSelector (config) {
   selectWindow.center()
   let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:linear-gradient(145deg,#1a1f2e 0%,#0f1320 100%);color:#e0e6f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 20px 18px}
-    .logo{font-size:22px;margin-bottom:4px}
-    h2{font-size:15px;color:#8a9bb5;font-weight:400;margin-bottom:18px;letter-spacing:1px}
-    .group-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;max-width:360px;padding:13px 20px;margin-bottom:10px;font-size:14px;font-weight:600;color:#e0e6f0;background:linear-gradient(135deg,#252d3d,#1e2538);border:1px solid #33475f;border-radius:8px;cursor:pointer;transition:all .25s ease;letter-spacing:.5px}
-    .group-btn:hover{background:linear-gradient(135deg,#2d3a52,#253048);border-color:#4a7fff;box-shadow:0 0 12px rgba(74,127,255,.25);transform:translateY(-1px)}
-    .group-btn:active{transform:translateY(0);box-shadow:none}
-    .group-btn .icon{font-size:16px}
-    .group-btn .range{font-size:11px;color:#6b7fa3;margin-left:4px}
-    .footer{margin-top:auto;padding-top:10px;font-size:10px;color:#3a4560}
-  </style></head><body>
-    <div class="logo">&#127918;</div>
-    <h2>选择要启动的分组</h2>`
-  config.groups.forEach((g) => { const s = (g.index - 1) * 5 + 1, e = g.index * 5; html += `<button class="group-btn" onclick="selectGroup(${g.index})"><span class="icon">&#128187;</span>${g.name} 组<span class="range">编号 ${s}-${e}</span></button>\n` })
-  html += `<div class="footer">NoVNC 群控客户端</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}</script></body></html>`
+    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#1a1f2e;color:#e0e6f0;display:flex;flex-direction:column;align-items:center;padding:14px 16px 10px;-webkit-app-region:drag}
+    .group-btn{display:flex;align-items:center;justify-content:center;width:200px;padding:9px 0;margin-bottom:8px;font-size:13px;font-weight:600;color:#c8d6e5;background:#252d3d;border:1px solid #33475f;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
+    .group-btn:hover{background:#2d3a52;border-color:#4a7fff;color:#fff;box-shadow:0 0 10px rgba(74,127,255,.2)}
+    .group-btn:active{transform:scale(.97)}
+  </style></head><body>`
+  config.groups.forEach((g) => { html += `<button class="group-btn" onclick="selectGroup(${g.index})">${g.name}</button>\n` })
+  html += `<script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
   selectWindow.once('ready-to-show', () => {
     selectWindow.show()
