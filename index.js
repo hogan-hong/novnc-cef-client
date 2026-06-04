@@ -265,9 +265,9 @@ function showGroupSelector (config) {
   selectWindow.center()
   let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#1a1f2e;color:#e0e6f0;display:flex;flex-direction:column;align-items:center;padding:10px;-webkit-app-region:drag}
-    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 16px;margin:0 4px 5px 0;font-size:13px;font-weight:600;color:#c8d6e5;background:#252d3d;border:1px solid #33475f;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
-    .group-btn:hover{background:#2d3a52;border-color:#4a7fff;color:#fff;box-shadow:0 0 10px rgba(74,127,255,.2)}
+    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f5f7fa;color:#333;display:flex;align-items:center;justify-content:center;padding:10px;-webkit-app-region:drag}
+    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 18px;margin:0 5px;font-size:13px;font-weight:600;color:#fff;background:#4a7fff;border:none;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
+    .group-btn:hover{background:#3a6fee;box-shadow:0 2px 8px rgba(74,127,255,.35)}
     .group-btn:active{transform:scale(.97)}
   </style></head><body>
     <div style="display:flex;flex-wrap:wrap;justify-content:center;-webkit-app-region:no-drag">`
