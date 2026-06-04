@@ -252,8 +252,8 @@ function setLayer2Title (win, item) {
 // ========== 选组界面 ==========
 function showGroupSelector (config) {
   selectWindow = new BrowserWindow({
-    width: 300,
-    height: 100,
+    width: 200,
+    height: 80,
     show: false,
     frame: false,
     title: 'NoVNC 群控 - 选择分组',
@@ -265,14 +265,14 @@ function showGroupSelector (config) {
   selectWindow.center()
   let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#1a1f2e;color:#e0e6f0;display:flex;flex-direction:column;align-items:center;padding:12px 12px 8px;-webkit-app-region:drag}
-    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:8px 18px;margin:0 4px 6px 0;font-size:13px;font-weight:600;color:#c8d6e5;background:#252d3d;border:1px solid #33475f;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
+    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#1a1f2e;color:#e0e6f0;display:flex;flex-direction:column;align-items:center;padding:10px;-webkit-app-region:drag}
+    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 16px;margin:0 4px 5px 0;font-size:13px;font-weight:600;color:#c8d6e5;background:#252d3d;border:1px solid #33475f;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
     .group-btn:hover{background:#2d3a52;border-color:#4a7fff;color:#fff;box-shadow:0 0 10px rgba(74,127,255,.2)}
     .group-btn:active{transform:scale(.97)}
   </style></head><body>
     <div style="display:flex;flex-wrap:wrap;justify-content:center;-webkit-app-region:no-drag">`
   config.groups.forEach((g) => { html += `<button class="group-btn" onclick="selectGroup(${g.index})">${g.name}组</button>` })
-  html += `</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}requestAnimationFrame(()=>{requestAnimationFrame(()=>{const h=document.documentElement.scrollHeight;ipcRenderer.send('select-resize',h)})})</script></body></html>`
+  html += `</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}requestAnimationFrame(()=>{requestAnimationFrame(()=>{ipcRenderer.send('select-resize',document.documentElement.scrollWidth,document.documentElement.scrollHeight)})})</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
   // ★ 主进程监听ESC，比渲染进程keydown更可靠（不受-webkit-app-region:drag影响）
   selectWindow.webContents.on('before-input-event', (event, input) => {
@@ -1115,10 +1115,9 @@ app.whenReady().then(() => {
   app.on('activate', () => {})
 })
 
-ipcMain.on('select-resize', (event, contentHeight) => {
+ipcMain.on('select-resize', (event, contentWidth, contentHeight) => {
   if (!selectWindow || selectWindow.isDestroyed()) return
-  const bounds = selectWindow.getBounds()
-  selectWindow.setSize(bounds.width, contentHeight + 30)
+  selectWindow.setContentSize(contentWidth, contentHeight)
   selectWindow.center()
 })
 
