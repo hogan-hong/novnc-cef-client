@@ -265,12 +265,12 @@ function showGroupSelector (config) {
   selectWindow.center()
   let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f5f7fa;color:#333;display:flex;align-items:center;justify-content:center;padding:10px;-webkit-app-region:drag}
-    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 18px;margin:0 5px;font-size:13px;font-weight:600;color:#fff;background:#4a7fff;border:none;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag}
+    body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f5f7fa;color:#333;display:flex;align-items:center;justify-content:center;padding:5px;-webkit-app-region:drag}
+    .group-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 18px;margin:0 5px;font-size:13px;font-weight:600;color:#fff;background:#4a7fff;border:none;border-radius:6px;cursor:pointer;transition:all .2s;-webkit-app-region:no-drag;white-space:nowrap}
     .group-btn:hover{background:#3a6fee;box-shadow:0 2px 8px rgba(74,127,255,.35)}
     .group-btn:active{transform:scale(.97)}
   </style></head><body>
-    <div style="display:flex;flex-wrap:wrap;justify-content:center;-webkit-app-region:no-drag">`
+    <div style="display:flex;flex-wrap:nowrap;justify-content:center;-webkit-app-region:no-drag">`
   config.groups.forEach((g) => { html += `<button class="group-btn" onclick="selectGroup(${g.index})">${g.name}组</button>` })
   html += `</div><script>const{ipcRenderer}=require('electron');function selectGroup(i){ipcRenderer.send('select-group',i)}requestAnimationFrame(()=>{requestAnimationFrame(()=>{ipcRenderer.send('select-resize',document.documentElement.scrollWidth,document.documentElement.scrollHeight)})})</script></body></html>`
   selectWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
