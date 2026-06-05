@@ -954,7 +954,10 @@ function createVNCWindows (config, groupIndex) {
     })
 
     win.setMenu(null)
-    win.on('page-title-updated', (event) => { event.preventDefault(); win.setTitle(item.title) })
+    win.on('page-title-updated', (event) => {
+      event.preventDefault()
+      if (win.getTitle() !== item.title) win.setTitle(item.title)
+    })
 
     // ★ 设置子窗口(Chrome_RenderWidgetHostHWND)标题
     setTimeout(() => {
@@ -964,12 +967,17 @@ function createVNCWindows (config, groupIndex) {
     }, 2000)
 
     // ★ VNC自动重连后也会触发did-finish-load，重新设置标题
+    // 防抖：避免did-finish-load频繁触发导致标题框闪烁
+    let _layer2Timer = null
     win.webContents.on('did-finish-load', () => {
-      win.setTitle(item.title)
-      // 延迟重设第二层窗口标题
-      setTimeout(() => {
-        if (!win.isDestroyed()) setLayer2Title(win, item)
-      }, 2000)
+      if (win.getTitle() !== item.title) win.setTitle(item.title)
+      // 防抖：5秒内只执行一次setLayer2Title
+      if (!_layer2Timer && !win.isDestroyed()) {
+        _layer2Timer = setTimeout(() => {
+          _layer2Timer = null
+          if (!win.isDestroyed()) setLayer2Title(win, item)
+        }, 2000)
+      }
       const apiPort = 38980 + currentGroupIndex
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
