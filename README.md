@@ -38,16 +38,28 @@ URL2=http://172.16.103.17:5801/vnc_lite.html?autoconnect=true&host=172.16.103.17
 | 参数 | 说明 |
 |------|------|
 | `--debug` | 调试模式：生成 `Log.txt` 日志文件（exe同目录），记录所有操作和API调用。**不加此参数则不生成日志文件** |
+| `--config=路径` | 指定配置文件路径，支持绝对路径和相对路径。不加此参数则自动搜索exe同目录下的 `配置文件.int` |
+| `--delay=毫秒` | 窗口创建间隔时间。不加此参数则同时创建所有窗口（默认0）。多窗口时加延迟可避免瞬间资源抢占 |
 
 ```bash
-# 正常启动（无日志）
+# 正常启动（无日志，自动找同目录配置文件）
 NoVNC客户端.exe
 
 # 调试模式启动（生成Log.txt）
 NoVNC客户端.exe --debug
 
-# 开发环境调试模式
+# 指定配置文件
+NoVNC客户端.exe --config=D:\宏聚网络\配置文件.int
+
+# 延迟创建窗口，每个窗口间隔1.5秒
+NoVNC客户端.exe --delay=1500
+
+# 组合使用
+NoVNC客户端.exe --config=D:\宏聚网络\配置文件.int --delay=1500 --debug
+
+# 开发环境
 npm start -- --debug
+npm start -- --config=./配置文件.int --delay=1000
 ```
 
 ### 直接运行
