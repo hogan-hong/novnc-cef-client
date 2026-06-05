@@ -4,7 +4,15 @@ const fs = require('fs')
 const { execFile } = require('child_process')
 const http = require('http')
 
-// ========== 日志写入（优先exe同目录，失败则回退到用户目录/临时目录）==========
+// ========== 调试模式（--debug 参数启动才写日志文件）==========
+const _debugMode = process.argv.includes('--debug')
+
+let logPath = null
+const origLog = console.log
+const origErr = console.error
+let _logBuffer = []
+let _logFlushTimer = null
+
 function pickWritableLogPath () {
   const dirs = [
     path.dirname(app.getPath('exe')),
@@ -16,7 +24,7 @@ function pickWritableLogPath () {
     try {
       fs.mkdirSync(dir, { recursive: true })
       const candidate = path.join(dir, 'Log.txt')
-      fs.writeFileSync(candidate, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 ===\n`, 'utf-8')
+      fs.writeFileSync(candidate, `[${new Date().toLocaleString('zh-CN', {hour12:false})}] === NoVNC Client 启动 (调试模式) ===\n`, 'utf-8')
       return candidate
     } catch (e) {}
   }
@@ -24,13 +32,9 @@ function pickWritableLogPath () {
   return path.join(path.dirname(app.getPath('exe')), 'Log.txt')
 }
 
-let logPath = pickWritableLogPath()
-const origLog = console.log
-const origErr = console.error
-let _logBuffer = []
-let _logFlushTimer = null
-
 function writeLog (msg) {
+  if (!_debugMode) return
+  if (!logPath) logPath = pickWritableLogPath()
   const line = `[${new Date().toLocaleString('zh-CN', {hour12:false})}] ${msg}\n`
   _logBuffer.push(line)
   // 缓冲区满100条或首次立即刷，其他攒着3秒一刷
@@ -51,14 +55,15 @@ function flushLog () {
 console.log = function () { writeLog([...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origLog.apply(console, arguments) }
 console.error = function () { writeLog('ERR: ' + [...arguments].map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); origErr.apply(console, arguments) }
 
-// ★ 启动时立即写入日志，确保日志系统工作
-console.log('========== NoVNC Client 启动开始 ==========')
-console.log('日志文件:', logPath)
-console.log('进程ID:', process.pid)
-console.log('Node版本:', process.version)
-console.log('Electron版本:', process.versions.electron)
-console.log('平台:', process.platform)
-console.log('架构:', process.arch)
+if (_debugMode) {
+  console.log('========== NoVNC Client 启动开始 (调试模式) ==========')
+  console.log('日志文件:', logPath)
+  console.log('进程ID:', process.pid)
+  console.log('Node版本:', process.version)
+  console.log('Electron版本:', process.versions.electron)
+  console.log('平台:', process.platform)
+  console.log('架构:', process.arch)
+}
 
 // ★ 全局错误处理：捕获未处理的异常和Promise rejection
 process.on('uncaughtException', (err) => {

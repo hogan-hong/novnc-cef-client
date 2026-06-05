@@ -11,7 +11,7 @@
 - HTTP API外部控制：支持点击、拖动、滚轮、按键、粘贴等指令
 - 灵活的windowIndex参数：单窗口、多窗口、群控一参搞定
 - 屏幕右下角退出按钮，每个窗口右下角刷新按钮
-- 子窗口标题自动设置（Chrome_RenderWidgetHostHWND），支持大漠绑定识别
+- 子窗口标题自动锁定（C# TitleLocker后台进程），支持大漠绑定识别
 
 ## 使用方法
 
@@ -32,6 +32,23 @@ URL2=http://172.16.103.17:5801/vnc_lite.html?autoconnect=true&host=172.16.103.17
 
 - 每组最多5个窗口，最多10组（共50个窗口）
 - 编码支持 UTF-8 和 GBK 自动检测
+
+### 启动参数
+
+| 参数 | 说明 |
+|------|------|
+| `--debug` | 调试模式：生成 `Log.txt` 日志文件（exe同目录），记录所有操作和API调用。**不加此参数则不生成日志文件** |
+
+```bash
+# 正常启动（无日志）
+NoVNC客户端.exe
+
+# 调试模式启动（生成Log.txt）
+NoVNC客户端.exe --debug
+
+# 开发环境调试模式
+npm start -- --debug
+```
 
 ### 直接运行
 
@@ -80,7 +97,7 @@ API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标�
 
 ### 控制命令
 
-**POST** 请求，JSON格式：
+**POST** `/` 请求，JSON格式：
 
 ```json
 {
@@ -144,21 +161,121 @@ curl -X POST http://127.0.0.1:38981 -d '{"action":"keypress","code":"Enter","win
 curl -X POST http://127.0.0.1:38981 -d '{"action":"clipboard","text":"hello","windowIndex":"1"}'
 ```
 
-### 诊断接口
+### 管理接口
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/status` | GET | 获取窗口数量、同步状态、主控窗口 |
-| `/diag?win=1` | GET | 获取指定窗口canvas信息（1-based编号） |
-| `/devtools?win=1` | GET | 打开指定窗口DevTools（1-based编号） |
-| `/set-master` | POST | 设置主控窗口 `{"windowIndex": 1}` |
+#### POST `/refresh` — 刷新窗口画面
+
+重新加载指定窗口的VNC页面，刷新后自动重设标题并重启TitleLocker。
+
+```bash
+# 刷新第1个窗口
+curl -X POST http://127.0.0.1:38981/refresh -d '{"windowIndex":1}'
+```
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `windowIndex` | int | 否 | 1 | 窗口编号（1-based） |
+
+返回：`{"ok": true}`
+
+#### POST `/exit` — 退出应用
+
+关闭所有窗口并退出程序。
+
+```bash
+curl -X POST http://127.0.0.1:38981/exit
+```
+
+返回：`{"ok": true}`
+
+### 查询接口
+
+#### GET `/status` — 获取运行状态
+
+```bash
+curl http://127.0.0.1:38981/status
+```
+
+返回：
+
+```json
+{
+  "success": true,
+  "windowCount": 5,
+  "control": false,
+  "master": -1,
+  "sync": false,
+  "port": 38981
+}
+```
+
+#### GET `/windows` — 获取窗口列表
+
+返回当前组的所有窗口信息，包括控制IP，供同步器查询。
+
+```bash
+curl http://127.0.0.1:38981/windows
+```
+
+返回：
+
+```json
+{
+  "success": true,
+  "groupIndex": 1,
+  "groupName": "测试组",
+  "windowCount": 5,
+  "port": 38981,
+  "windows": [
+    {
+      "index": 1,
+      "title": "1|172.16.103.16",
+      "controlIP": "172.16.103.16",
+      "url": "http://172.16.103.16:5801/vnc_lite.html?...",
+      "alive": true
+    },
+    ...
+  ]
+}
+```
+
+#### GET `/diag?win=1` — 诊断窗口canvas信息
+
+获取指定窗口的canvas尺寸和缩放比例，用于调试。
+
+```bash
+curl "http://127.0.0.1:38981/diag?win=1"
+```
+
+返回：
+
+```json
+{
+  "canvasW": 1334,
+  "canvasH": 750,
+  "rectLeft": 0,
+  "rectTop": 0,
+  "rectW": 856,
+  "rectH": 480,
+  "scaleX": "1.56",
+  "scaleY": "1.56"
+}
+```
+
+#### GET `/devtools?win=1` — 打开DevTools
+
+打开指定窗口的Chrome开发者工具。
+
+```bash
+curl "http://127.0.0.1:38981/devtools?win=1"
+```
 
 ## 技术细节
 
 - 直接noVNC模式，无边框窗口，GPU硬件加速渲染
 - 同步使用 `sendInputEvent` 直接注入，低延迟
 - API坐标转换使用纯数学计算（856×480 → 1334×750）
-- 子窗口标题通过 PowerShell + C# 设置（Chrome_RenderWidgetHostHWND / Chrome Legacy Window 自动匹配）
+- 子窗口标题通过C# TitleLocker后台进程锁定（SetWinEventHook监听EVENT_OBJECT_NAMECHANGE），刷新后自动重启
 - 退出按钮为独立子窗口（parent绑定第一个VNC窗口），切换虚拟桌面时跟随消失
-- 日志写入exe同目录 `Log.txt`
+- 默认不生成日志文件，加 `--debug` 参数启动才写 `Log.txt`（缓冲写入，3秒或100条一刷）
 - windowIndex 1-based 字符拆分，拖动中断机制，noVNC setCapture 禁用
