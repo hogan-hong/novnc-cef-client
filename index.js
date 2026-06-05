@@ -197,41 +197,49 @@ function startTitleLocker () {
   const csFile = path.join(__dirname, 'title-locker.cs')
   const exeFile = path.join(app.getPath('temp'), 'novnc_TitleLocker.exe')
   
-  // 编译C# -> exe
-  const cscPath = path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe')
-  try {
-    execFile(cscPath, ['/nologo', '/optimize', '/out:' + exeFile, csFile], { timeout: 15000 }, (err) => {
-      if (err) {
-        console.error('TitleLocker编译失败，回退到PowerShell方式:', err.message)
-        return
+  function launchLocker () {
+    // 收集所有窗口的HWND和标题
+    const args = []
+    for (let i = 0; i < vncWindows.length; i++) {
+      const win = vncWindows[i]
+      if (!win || win.isDestroyed()) continue
+      const item = currentConfig.items[(currentGroupIndex - 1) * 5 + i]
+      if (!item) continue
+      const hwndBuf = win.getNativeWindowHandle()
+      let hwndDec
+      if (hwndBuf.length === 8) {
+        const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+        hwndDec = hi === 0 ? lo.toString() : hwndBuf.readBigUInt64LE().toString()
+      } else {
+        hwndDec = hwndBuf.readUInt32LE(0).toString()
       }
-      // 收集所有窗口的HWND和标题
-      const args = []
-      for (let i = 0; i < vncWindows.length; i++) {
-        const win = vncWindows[i]
-        if (!win || win.isDestroyed()) continue
-        const item = currentConfig.items[(currentGroupIndex - 1) * 5 + i]
-        if (!item) continue
-        const hwndBuf = win.getNativeWindowHandle()
-        let hwndDec
-        if (hwndBuf.length === 8) {
-          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
-          hwndDec = hi === 0 ? lo.toString() : hwndBuf.readBigUInt64LE().toString()
-        } else {
-          hwndDec = hwndBuf.readUInt32LE(0).toString()
+      const title = item.index + '|' + item.controlIP
+      args.push(hwndDec + ',' + title)
+    }
+    if (args.length === 0) return
+    
+    const { spawn } = require('child_process')
+    titleLockerProcess = spawn(exeFile, args, { detached: true, stdio: 'ignore' })
+    titleLockerProcess.unref()
+    console.log('TitleLocker已启动, PID:', titleLockerProcess.pid, '监控窗口数:', args.length)
+  }
+
+  // exe已存在则直接启动，否则先编译
+  if (fs.existsSync(exeFile)) {
+    launchLocker()
+  } else {
+    const cscPath = path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe')
+    try {
+      execFile(cscPath, ['/nologo', '/optimize', '/out:' + exeFile, csFile], { timeout: 15000 }, (err) => {
+        if (err) {
+          console.error('TitleLocker编译失败:', err.message)
+          return
         }
-        const title = item.index + '|' + item.controlIP
-        args.push(hwndDec + ',' + title)
-      }
-      if (args.length === 0) return
-      
-      const { spawn } = require('child_process')
-      titleLockerProcess = spawn(exeFile, args, { detached: true, stdio: 'ignore' })
-      titleLockerProcess.unref()
-      console.log('TitleLocker已启动, PID:', titleLockerProcess.pid, '监控窗口数:', args.length)
-    })
-  } catch (e) {
-    console.error('TitleLocker启动异常:', e.message)
+        launchLocker()
+      })
+    } catch (e) {
+      console.error('TitleLocker启动异常:', e.message)
+    }
   }
 }
 
@@ -509,8 +517,10 @@ function startAPIServer (groupIndex, config) {
                   setTimeout(() => {
                     if (!refreshWin.isDestroyed()) {
                       refreshWin.setTitle(item.title)
-                      // 子窗口标题由TitleLocker自动纠正，无需手动设置
-                      console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 标题已重设: ${item.title}`)
+                      // 刷新后子窗口hwnd可能变了，重启TitleLocker更新监控
+                      stopTitleLocker()
+                      startTitleLocker()
+                      console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 标题已重设, TitleLocker已重启`)
                     }
                   }, 2000)
                 })
@@ -952,10 +962,11 @@ function createVNCWindows (config, groupIndex) {
       if (win.getTitle() !== item.title) win.setTitle(item.title)
     })
 
-    // ★ 子窗口标题由TitleLocker后台进程统一管理，不再手动设置
+    // ★ 子窗口标题由TitleLocker后台进程统一管理，不再手动调用setLayer2Title
 
-    // ★ did-finish-load: 只注入刷新按钮，不设标题（标题由TitleLocker+page-title-updated管理）
+    // ★ did-finish-load: 设置主窗口标题 + 注入刷新按钮
     win.webContents.on('did-finish-load', () => {
+      if (win.getTitle() !== item.title) win.setTitle(item.title)
       const apiPort = 38980 + currentGroupIndex
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
