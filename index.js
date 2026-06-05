@@ -188,65 +188,58 @@ function escapeHtml (value) {
   return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
-// ========== 批量设置第二层窗口标题 ==========
-// 用队列统一处理，避免15个窗口同时起PowerShell进程互相打架
-const _titleQueue = []
-let _titleProcessing = false
-const CSHARP_HELPER = `
-using System;using System.Runtime.InteropServices;
-public class W{
-  [DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string n,string t);
-  [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool SetWindowText(IntPtr h,string s);
-  [DllImport("user32.dll")]public static extern IntPtr GetWindow(IntPtr h,uint c);
-}`
+// ========== 子窗口标题锁定器（C# TitleLocker） ==========
+// 用SetWinEventHook监听标题变化，只在标题被改时才纠正，不再反复起PowerShell
+let titleLockerProcess = null
 
-function queueLayer2Title (win, item) {
-  if (!win || win.isDestroyed()) return
-  const hwndBuf = win.getNativeWindowHandle()
-  let hwndHex
-  if (hwndBuf.length === 8) {
-    const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
-    hwndHex = hi === 0 ? lo.toString(16).toUpperCase() : hwndBuf.readBigUInt64LE().toString(16).toUpperCase()
-  } else {
-    hwndHex = hwndBuf.readUInt32LE(0).toString(16).toUpperCase()
-  }
-  _titleQueue.push({ hwndHex, title: `${item.index}|${item.controlIP}`, win, item })
-  if (!_titleProcessing) processTitleQueue()
-}
-
-function processTitleQueue () {
-  if (_titleQueue.length === 0) { _titleProcessing = false; return }
-  _titleProcessing = true
-
-  // 每批最多5个窗口，避免一次起太多
-  const batch = _titleQueue.splice(0, 5)
-  // Add-Type只编译一次，所有窗口共享
-  const psLines = [`Add-Type -TypeDefinition '${CSHARP_HELPER}'`]
-  batch.forEach(({ hwndHex, title }) => {
-    psLines.push(`$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome_RenderWidgetHostHWND',$null);if($c -eq [IntPtr]::Zero){$c=[W]::FindWindowEx([IntPtr]0x${hwndHex},[IntPtr]::Zero,'Chrome Legacy Window',$null)};if($c -eq [IntPtr]::Zero){$c=[W]::GetWindow([IntPtr]0x${hwndHex},5)};if($c -ne [IntPtr]::Zero){[W]::SetWindowText($c,'${title}');Write-Host 'OK_${hwndHex}'}else{Write-Host 'RETRY_${hwndHex}'}`)
-  })
-  const psScript = psLines.join('\n')
-  const tmpFile = path.join(app.getPath('temp'), 'novnc_title_batch.ps1')
-
-  try { fs.writeFileSync(tmpFile, psScript, 'utf-8') } catch (e) { _titleProcessing = false; return }
-
-  execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-File', tmpFile], { timeout: 15000 }, (err, stdout) => {
-    try { fs.unlinkSync(tmpFile) } catch (e) {}
-    const output = (stdout || '').trim()
-    // 检查失败的，延迟后重新加入队列
-    batch.forEach(({ hwndHex, title, win, item }) => {
-      if (win.isDestroyed()) return
-      if (!output.includes(`OK_${hwndHex}`)) {
-        setTimeout(() => queueLayer2Title(win, item), 1000)
+function startTitleLocker () {
+  if (titleLockerProcess) return // 已经启动
+  const csFile = path.join(__dirname, 'title-locker.cs')
+  const exeFile = path.join(app.getPath('temp'), 'novnc_TitleLocker.exe')
+  
+  // 编译C# -> exe
+  const cscPath = path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe')
+  try {
+    execFile(cscPath, ['/nologo', '/optimize', '/out:' + exeFile, csFile], { timeout: 15000 }, (err) => {
+      if (err) {
+        console.error('TitleLocker编译失败，回退到PowerShell方式:', err.message)
+        return
       }
+      // 收集所有窗口的HWND和标题
+      const args = []
+      for (let i = 0; i < vncWindows.length; i++) {
+        const win = vncWindows[i]
+        if (!win || win.isDestroyed()) continue
+        const item = currentConfig.items[(currentGroupIndex - 1) * 5 + i]
+        if (!item) continue
+        const hwndBuf = win.getNativeWindowHandle()
+        let hwndDec
+        if (hwndBuf.length === 8) {
+          const lo = hwndBuf.readUInt32LE(0), hi = hwndBuf.readUInt32LE(4)
+          hwndDec = hi === 0 ? lo.toString() : hwndBuf.readBigUInt64LE().toString()
+        } else {
+          hwndDec = hwndBuf.readUInt32LE(0).toString()
+        }
+        const title = item.index + '|' + item.controlIP
+        args.push(hwndDec + ',' + title)
+      }
+      if (args.length === 0) return
+      
+      const { spawn } = require('child_process')
+      titleLockerProcess = spawn(exeFile, args, { detached: true, stdio: 'ignore' })
+      titleLockerProcess.unref()
+      console.log('TitleLocker已启动, PID:', titleLockerProcess.pid, '监控窗口数:', args.length)
     })
-    // 处理下一批
-    setTimeout(() => processTitleQueue(), 300)
-  })
+  } catch (e) {
+    console.error('TitleLocker启动异常:', e.message)
+  }
 }
 
-function setLayer2Title (win, item) {
-  queueLayer2Title(win, item)
+function stopTitleLocker () {
+  if (titleLockerProcess && !titleLockerProcess.killed) {
+    try { titleLockerProcess.kill() } catch (e) {}
+    titleLockerProcess = null
+  }
 }
 
 // ========== 选组界面 ==========
@@ -516,7 +509,7 @@ function startAPIServer (groupIndex, config) {
                   setTimeout(() => {
                     if (!refreshWin.isDestroyed()) {
                       refreshWin.setTitle(item.title)
-                      setLayer2Title(refreshWin, item)
+                      // 子窗口标题由TitleLocker自动纠正，无需手动设置
                       console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 标题已重设: ${item.title}`)
                     }
                   }, 2000)
@@ -959,25 +952,10 @@ function createVNCWindows (config, groupIndex) {
       if (win.getTitle() !== item.title) win.setTitle(item.title)
     })
 
-    // ★ 设置子窗口(Chrome_RenderWidgetHostHWND)标题
-    setTimeout(() => {
-      if (!win.isDestroyed()) {
-        setLayer2Title(win, item)
-      }
-    }, 2000)
+    // ★ 子窗口标题由TitleLocker后台进程统一管理，不再手动设置
 
-    // ★ VNC自动重连后也会触发did-finish-load，重新设置标题
-    // 防抖：避免did-finish-load频繁触发导致标题框闪烁
-    let _layer2Timer = null
+    // ★ did-finish-load: 只注入刷新按钮，不设标题（标题由TitleLocker+page-title-updated管理）
     win.webContents.on('did-finish-load', () => {
-      if (win.getTitle() !== item.title) win.setTitle(item.title)
-      // 防抖：5秒内只执行一次setLayer2Title
-      if (!_layer2Timer && !win.isDestroyed()) {
-        _layer2Timer = setTimeout(() => {
-          _layer2Timer = null
-          if (!win.isDestroyed()) setLayer2Title(win, item)
-        }, 2000)
-      }
       const apiPort = 38980 + currentGroupIndex
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
@@ -1084,6 +1062,8 @@ function createVNCWindows (config, groupIndex) {
   
           if (!apiServer) startAPIServer(groupIndex, config)
           createExitButton()
+          // 延迟启动TitleLocker，等窗口都加载完
+          setTimeout(() => startTitleLocker(), 5000)
         }, windowDelay)
       } else {
         setTimeout(() => createNextWindow(i + 1), windowDelay)
@@ -1097,6 +1077,8 @@ function createVNCWindows (config, groupIndex) {
     })
     if (!apiServer) startAPIServer(groupIndex, config)
     createExitButton()
+    // 延迟启动TitleLocker，等窗口都加载完
+    setTimeout(() => startTitleLocker(), 5000)
   }
 }
 
@@ -1113,6 +1095,7 @@ app.whenReady().then(() => {
   }
   if (config.groups.length === 1) createVNCWindows(config, config.groups[0].index)
   else showGroupSelector(config)
+  app.on('before-quit', () => { stopTitleLocker() })
   app.on('activate', () => {})
 })
 
@@ -1151,4 +1134,4 @@ ipcMain.on('exit-app', () => {
   app.quit()
   process.exit(0)
 })
-app.on('window-all-closed', () => {})
+app.on('window-all-closed', () => { stopTitleLocker(); app.quit() })
