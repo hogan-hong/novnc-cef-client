@@ -43,6 +43,21 @@ class TitleLocker
     [DllImport("user32.dll")]
     static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int pvAttribute, int cbAttribute);
+
+    const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
+    const int DWMWA_NCRENDERING_POLICY = 2;
+    const int DWMNCRP_DISABLED = 1;
+
+    static void DisableDwmTransitions(IntPtr hwnd)
+    {
+        int disable = 1;
+        DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, ref disable, sizeof(int));
+        int ncrp = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, ref ncrp, sizeof(int));
+    }
+
     const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
     const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     const uint GW_CHILD = 5;
@@ -166,6 +181,12 @@ class TitleLocker
         }
 
         if (targets.Count == 0) return;
+
+        // 给所有Electron主窗口禁用DWM焦点过渡动画(消除焦点切换时闪烁出来的边框)
+        foreach (var t in targets)
+        {
+            if (IsWindow(t.ParentHwnd)) DisableDwmTransitions(t.ParentHwnd);
+        }
 
         // Initial setup: try to find child windows (may not exist yet)
         InitTargets();

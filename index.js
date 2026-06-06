@@ -200,7 +200,10 @@ let titleLockerProcess = null
 function startTitleLocker () {
   if (titleLockerProcess) return // 已经启动
   const csFile = path.join(__dirname, 'title-locker.cs')
-  const exeFile = path.join(app.getPath('temp'), 'novnc_TitleLocker.exe')
+  // exe文件名带cs的mtime, cs修改后自动重新编译
+  let csVersion = '0'
+  try { csVersion = String(Math.floor(fs.statSync(csFile).mtimeMs)) } catch (e) {}
+  const exeFile = path.join(app.getPath('temp'), `novnc_TitleLocker_${csVersion}.exe`)
   
   function launchLocker () {
     // 收集所有窗口的HWND和标题
