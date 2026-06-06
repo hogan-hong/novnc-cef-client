@@ -34,11 +34,52 @@ class TitleLocker
     [DllImport("user32.dll")]
     static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll")]
+    static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
     const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
     const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     const uint GW_CHILD = 5;
     const uint GW_HWNDNEXT = 2;
     const uint WM_NULL = 0x0000;
+    const int GWL_STYLE = -16;
+    const int GWL_EXSTYLE = -20;
+    const int WS_CAPTION = 0x00C00000;
+    const int WS_BORDER = 0x00800000;
+    const int WS_DLGFRAME = 0x00400000;
+    const int WS_THICKFRAME = 0x00040000;
+    const int WS_SYSMENU = 0x00080000;
+    const int WS_EX_DLGMODALFRAME = 0x00000001;
+    const int WS_EX_CLIENTEDGE = 0x00000200;
+    const int WS_EX_STATICEDGE = 0x00020000;
+    const int WS_EX_WINDOWEDGE = 0x00000100;
+    const uint SWP_NOSIZE = 0x0001;
+    const uint SWP_NOMOVE = 0x0002;
+    const uint SWP_NOZORDER = 0x0004;
+    const uint SWP_NOACTIVATE = 0x0010;
+    const uint SWP_FRAMECHANGED = 0x0020;
+    const uint SWP_NOREDRAW = 0x0008;
+
+    static void StripWindowFrame(IntPtr hwnd)
+    {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        int newStyle = style & ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_SYSMENU);
+        if (newStyle != style) SetWindowLong(hwnd, GWL_STYLE, newStyle);
+
+        int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+        int newExStyle = exStyle & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE);
+        if (newExStyle != exStyle) SetWindowLong(hwnd, GWL_EXSTYLE, newExStyle);
+
+        // 应用样式变化(SWP_NOREDRAW避免重绘瞬间闪烁)
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOREDRAW);
+    }
 
     class Target
     {
@@ -62,6 +103,8 @@ class TitleLocker
         {
             if (hwnd == t.ChildHwnd || IsChildOf(hwnd, t.ParentHwnd))
             {
+                // 每次事件来都重新去掉边框样式(Chrome可能恢复)
+                StripWindowFrame(hwnd);
                 var sb = new StringBuilder(256);
                 GetWindowText(hwnd, sb, 256);
                 if (sb.ToString() != t.Title)
@@ -104,6 +147,7 @@ class TitleLocker
             if (child != IntPtr.Zero)
             {
                 t.ChildHwnd = child;
+                StripWindowFrame(child);
                 SetWindowText(child, t.Title);
             }
         }
