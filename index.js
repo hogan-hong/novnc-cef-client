@@ -514,22 +514,16 @@ function startAPIServer (groupIndex, config) {
               console.log(`刷新窗口 ${refreshIdx + 1} 画面`)
               refreshWin.webContents.reload()
               console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 重新加载已发送`)
-              // ★ 刷新后重新设置子窗口标题（reload后Chrome Legacy Window标题会重置）
-              const startIdx = (currentGroupIndex - 1) * 5
-              const item = currentConfig ? currentConfig.items[startIdx + refreshIdx] : null
-              if (item) {
-                refreshWin.webContents.once('did-finish-load', () => {
-                  setTimeout(() => {
-                    if (!refreshWin.isDestroyed()) {
-                      refreshWin.setTitle(item.title)
-                      // 刷新后子窗口hwnd可能变了，重启TitleLocker更新监控
-                      stopTitleLocker()
-                      startTitleLocker()
-                      console.log(`[API /refresh] 窗口 ${refreshIdx + 1} 标题已重设, TitleLocker已重启`)
-                    }
-                  }, 2000)
-                })
-              }
+              // ★ 刷新后子窗口hwnd可能变了，重启TitleLocker更新监控(主窗口标题不动，避免隐藏标题条闪烁)
+              refreshWin.webContents.once('did-finish-load', () => {
+                setTimeout(() => {
+                  if (!refreshWin.isDestroyed()) {
+                    stopTitleLocker()
+                    startTitleLocker()
+                    console.log(`[API /refresh] 窗口 ${refreshIdx + 1} TitleLocker已重启`)
+                  }
+                }, 2000)
+              })
             } else {
               console.error(`[API /refresh] 窗口 ${refreshIdx + 1} 已销毁或不存在`)
             }
@@ -962,16 +956,15 @@ function createVNCWindows (config, groupIndex) {
     })
 
     win.setMenu(null)
+    // ★ 主窗口标题在创建时已经通过title:item.title设好，page-title-updated只拦截不重设(setTitle会触发非客户区重绘导致隐藏标题条闪烁)
     win.on('page-title-updated', (event) => {
       event.preventDefault()
-      if (win.getTitle() !== item.title) win.setTitle(item.title)
     })
 
     // ★ 子窗口标题由TitleLocker后台进程统一管理，不再手动调用setLayer2Title
 
-    // ★ did-finish-load: 设置主窗口标题 + 注入刷新按钮
+    // ★ did-finish-load: 只注入刷新按钮，不重设主窗口标题(避免隐藏标题条闪烁)
     win.webContents.on('did-finish-load', () => {
-      if (win.getTitle() !== item.title) win.setTitle(item.title)
       const apiPort = 38980 + currentGroupIndex
       const windowIndex = i + 1
       win.webContents.executeJavaScript(`
