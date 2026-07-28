@@ -7,6 +7,9 @@ const http = require('http')
 // ========== 调试模式（--debug 参数启动才写日志文件）==========
 const _debugMode = process.argv.includes('--debug')
 
+// ========== 竖屏模式（--portrait 参数启动，窗口480x856，API竖屏坐标）==========
+const _portraitMode = process.argv.includes('--portrait')
+
 let logPath = null
 const origLog = console.log
 const origErr = console.error
@@ -63,6 +66,7 @@ if (_debugMode) {
   console.log('Electron版本:', process.versions.electron)
   console.log('平台:', process.platform)
   console.log('架构:', process.arch)
+  console.log('竖屏模式:', _portraitMode ? '是 (480×856)' : '否 (856×480)')
 }
 
 // ★ 全局错误处理：捕获未处理的异常和Promise rejection
@@ -400,14 +404,14 @@ function removeSyncCapture () {
 
 
 
-// ========== 固定横屏分辨率 ==========
-// API坐标基于客户端分辨率 856×480
-// 实际手机分辨率 1334×750
-// API流程：越界检查(856×480) → 纯数学算viewport(不需要canvas缓存) → sendInputEvent
-const CLIENT_WIDTH = 856
-const CLIENT_HEIGHT = 480
-const PHONE_WIDTH = 1334
-const PHONE_HEIGHT = 750
+// ========== 固定分辨率 ==========
+// 横屏: API坐标 856×480, 手机 1334×750
+// 竖屏: API坐标 480×856, 手机 750×1334
+// API流程：越界检查 -> 纯数学算viewport(不需要canvas缓存) -> sendInputEvent
+const CLIENT_WIDTH = _portraitMode ? 480 : 856
+const CLIENT_HEIGHT = _portraitMode ? 856 : 480
+const PHONE_WIDTH = _portraitMode ? 750 : 1334
+const PHONE_HEIGHT = _portraitMode ? 1334 : 750
 
 // ★ API坐标 → viewport坐标（纯数学计算，不需要canvas缓存）
 // 1. API坐标(856×480) → 手机分辨率(1334×750)
@@ -637,6 +641,9 @@ function startAPIServer (groupIndex, config) {
         control: controlMode,
         master: masterWindowIndex,
         sync: controlMode && masterWindowIndex >= 0,
+        portrait: _portraitMode,
+        clientWidth: CLIENT_WIDTH,
+        clientHeight: CLIENT_HEIGHT,
         port
       }))
       return
@@ -922,10 +929,26 @@ function createVNCWindows (config, groupIndex) {
   if (groupItems.length === 0) return
 
   const workArea = screen.getPrimaryDisplay().workAreaSize
-  const winW = 853, winH = 500
-  const cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
-  const rows = Math.ceil(groupItems.length / cols)
-  const offsetX = Math.floor((workArea.width - cols * winW) / 2)
+  let winW, winH, cols, rows, offsetX, gapX = 0
+  if (_portraitMode) {
+    // 竖屏模式：单行平铺，480宽窗口，间距自动计算
+    // 2K屏(2560) 5个窗口: (2560-5*480)/4 = 40px 间距
+    winW = 480; winH = 856
+    cols = groupItems.length
+    rows = 1
+    if (groupItems.length > 1) {
+      gapX = Math.max(0, Math.floor((workArea.width - groupItems.length * winW) / (groupItems.length - 1)))
+      offsetX = Math.max(0, Math.floor((workArea.width - groupItems.length * winW - gapX * (groupItems.length - 1)) / 2))
+    } else {
+      offsetX = Math.floor((workArea.width - winW) / 2)
+    }
+    console.log(`竖屏模式: 窗口${winW}×${winH}, ${groupItems.length}个窗口, 间距${gapX}px`)
+  } else {
+    winW = 853; winH = 500
+    cols = Math.min(groupItems.length, Math.floor(workArea.width / winW))
+    rows = Math.ceil(groupItems.length / cols)
+    offsetX = Math.floor((workArea.width - cols * winW) / 2)
+  }
   const apiPort = 38980 + groupIndex
 
   // ★ 读取命令行参数 --delay=毫秒，设置窗口创建间隔，默认0(同时创建)
@@ -937,7 +960,7 @@ function createVNCWindows (config, groupIndex) {
 
   function createOneWindow(item, i) {
     const col = i % cols, row = Math.floor(i / cols)
-    const x = offsetX + col * winW, y = row * winH
+    const x = offsetX + col * (winW + gapX), y = row * winH
 
     // 创建直接显示noVNC的BrowserWindow
     const win = new BrowserWindow({

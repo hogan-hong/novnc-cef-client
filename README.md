@@ -40,6 +40,7 @@ URL2=http://172.16.103.17:5801/vnc_lite.html?autoconnect=true&host=172.16.103.17
 | `--debug` | 调试模式：生成 `Log.txt` 日志文件（exe同目录），记录所有操作和API调用。**不加此参数则不生成日志文件** |
 | `--config=路径` | 指定配置文件路径，支持绝对路径和相对路径。不加此参数则自动搜索exe同目录下的 `配置文件.int` |
 | `--delay=毫秒` | 窗口创建间隔时间。不加此参数则同时创建所有窗口（默认0）。多窗口时加延迟可避免瞬间资源抢占 |
+| `--portrait` | 竖屏模式：窗口变为 480×856，API坐标变为 480×856，窗口单行平铺（2K屏5个窗口间距40px）。不加此参数默认横屏 856×480 |
 
 ```bash
 # 正常启动（无日志，自动找同目录配置文件）
@@ -55,7 +56,13 @@ NoVNC客户端.exe --config=D:\宏聚网络\配置文件.int
 NoVNC客户端.exe --delay=1500
 
 # 组合使用
-NoVNC客户端.exe --config=D:\宏聚网络\配置文件.int --delay=1500 --debug
+NoVNC客户端.exe --config=D:\\宏聚网络\\配置文件.int --delay=1500 --debug
+
+# 竖屏模式启动（窗口480×856，API竖屏坐标）
+NoVNC客户端.exe --portrait
+
+# 竖屏 + 组合使用
+NoVNC客户端.exe --portrait --config=D:\\宏聚网络\\配置文件.int --delay=1500
 
 # 开发环境
 npm start -- --debug
@@ -93,7 +100,12 @@ npm run build:win
 
 ### 坐标系统
 
-API坐标基于客户端横屏分辨率 **856×480**，超出此范围的坐标将被忽略。内部自动转换为手机实际分辨率 **1334×750**。
+API坐标基于客户端分辨率，超出此范围的坐标将被忽略。
+
+- **横屏模式（默认）**：API坐标 **856×480**，内部转换为手机分辨率 **1334×750**
+- **竖屏模式（`--portrait`）**：API坐标 **480×856**，内部转换为手机分辨率 **750×1334**
+
+可通过 `/status` 接口查询当前模式及坐标范围。
 
 ### windowIndex 参数说明
 
@@ -217,6 +229,9 @@ curl http://127.0.0.1:38981/status
   "control": false,
   "master": -1,
   "sync": false,
+  "portrait": false,
+  "clientWidth": 856,
+  "clientHeight": 480,
   "port": 38981
 }
 ```
@@ -286,7 +301,7 @@ curl "http://127.0.0.1:38981/devtools?win=1"
 
 - 直接noVNC模式，无边框窗口，GPU硬件加速渲染
 - 同步使用 `sendInputEvent` 直接注入，低延迟
-- API坐标转换使用纯数学计算（856×480 → 1334×750）
+- API坐标转换使用纯数学计算（横屏 856×480 -> 1334×750，竖屏 480×856 -> 750×1334）
 - 子窗口标题通过C# TitleLocker后台进程锁定（SetWinEventHook监听EVENT_OBJECT_NAMECHANGE），刷新后自动重启
 - 退出按钮为独立子窗口（parent绑定第一个VNC窗口），切换虚拟桌面时跟随消失
 - 默认不生成日志文件，加 `--debug` 参数启动才写 `Log.txt`（缓冲写入，3秒或100条一刷）
